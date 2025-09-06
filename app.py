@@ -1015,8 +1015,9 @@ def main():
                                 # 保存结果到session state
                                 st.session_state['dea_results'] = results
                                 st.session_state['dea_model'] = selected_model
-                                st.session_state['input_vars'] = input_vars
-                                st.session_state['output_vars'] = output_vars
+                                # 将multiselect结果转换为列表保存
+                                st.session_state['input_vars'] = list(input_vars) if input_vars else []
+                                st.session_state['output_vars'] = list(output_vars) if output_vars else []
                                 
                                 st.success("✅ DEA分析完成！")
                                 
@@ -1237,7 +1238,8 @@ def main():
                                 # 保存结果到session state
                                 st.session_state['fsqca_results'] = fsqca_results
                                 st.session_state['necessity_results'] = necessity_results
-                                st.session_state['condition_vars'] = condition_vars
+                                # 将条件变量转换为列表保存
+                                st.session_state['condition_vars'] = list(condition_vars) if condition_vars else []
                                 
                                 st.success("✅ fsQCA分析完成！")
                                 
