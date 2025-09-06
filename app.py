@@ -1249,8 +1249,8 @@ def main():
                                     '效率值'
                                 )
                                 
-                                # 过滤一致性<0.9的变量
-                                valid_vars = necessity_results[necessity_results['一致性'] >= 0.9]['变量名'].tolist()
+                                # 过滤Raw Consistency<0.9的变量
+                                valid_vars = necessity_results[necessity_results['Raw Consistency'] >= 0.9]['条件变量'].tolist()
                                 if valid_vars:
                                     condition_vars = valid_vars
                                     st.info(f"✅ 必要性分析完成，保留 {len(valid_vars)} 个有效条件变量")
