@@ -1041,14 +1041,14 @@ def main():
                                             else:
                                                 output_vars_list.append(str(var))
                                     
-                                    st.session_state['input_vars'] = input_vars_list
-                                    st.session_state['output_vars'] = output_vars_list
+                                    st.session_state['selected_input_vars'] = input_vars_list
+                                    st.session_state['selected_output_vars'] = output_vars_list
                                     
                                 except Exception as e:
                                     st.error(f"保存分析结果时出错: {str(e)}")
                                     # 使用基本类型保存
-                                    st.session_state['input_vars'] = []
-                                    st.session_state['output_vars'] = []
+                                    st.session_state['selected_input_vars'] = []
+                                    st.session_state['selected_output_vars'] = []
                                     st.session_state['dea_model'] = str(selected_model) if selected_model else ""
                                 
                                 st.success("✅ DEA分析完成！")
@@ -1146,7 +1146,7 @@ def main():
         st.dataframe(data.head(), use_container_width=True)
         
         # 获取可用的条件变量（排除DEA已使用的变量）
-        used_vars = st.session_state.get('input_vars', []) + st.session_state.get('output_vars', [])
+        used_vars = st.session_state.get('selected_input_vars', []) + st.session_state.get('selected_output_vars', [])
         available_vars = [col for col in data.columns if col not in ['医院ID'] + used_vars]
         
         if len(available_vars) < 1:
@@ -1291,12 +1291,12 @@ def main():
                                             else:
                                                 condition_vars_list.append(str(var))
                                     
-                                    st.session_state['condition_vars'] = condition_vars_list
+                                    st.session_state['selected_condition_vars'] = condition_vars_list
                                     
                                 except Exception as e:
                                     st.error(f"保存fsQCA结果时出错: {str(e)}")
                                     # 使用基本类型保存
-                                    st.session_state['condition_vars'] = []
+                                    st.session_state['selected_condition_vars'] = []
                                 
                                 st.success("✅ fsQCA分析完成！")
                                 
