@@ -316,6 +316,52 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def create_searchable_multiselect(label, options, key, help_text="", placeholder="请选择..."):
+    """
+    创建带搜索功能的multiselect组件
+    
+    参数:
+    - label: 标签文本
+    - options: 选项列表
+    - key: 组件的唯一键
+    - help_text: 帮助文本
+    - placeholder: 占位符文本
+    
+    返回:
+    - 选中的选项列表
+    """
+    # 添加搜索框
+    search_term = st.text_input(
+        f"🔍 搜索{label}",
+        key=f"search_{key}",
+        placeholder=f"输入关键词搜索{label}...",
+        help=f"输入关键词来快速找到需要的{label}"
+    )
+    
+    # 根据搜索词过滤选项
+    if search_term:
+        filtered_options = [opt for opt in options if search_term.lower() in opt.lower()]
+        if not filtered_options:
+            st.warning(f"未找到包含 '{search_term}' 的{label}")
+            filtered_options = options
+    else:
+        filtered_options = options
+    
+    # 显示过滤后的选项数量
+    if search_term:
+        st.caption(f"找到 {len(filtered_options)} 个匹配的{label}")
+    
+    # 创建multiselect
+    selected = st.multiselect(
+        label,
+        options=filtered_options,
+        key=key,
+        help=help_text,
+        placeholder=placeholder
+    )
+    
+    return selected
+
 def validate_hospital_id_column(df):
     """验证数据是否包含医院ID列"""
     if '医院ID' not in df.columns:
@@ -932,11 +978,11 @@ def main():
                 st.markdown("**选择【投入变量】**")
                 st.caption("资源消耗类指标，如医生人数、床位数等")
                 st.info("💡 **医疗示例**：医生人数、护士人数、床位数、医疗设备数量、运营成本等")
-                input_vars = st.multiselect(
+                input_vars = create_searchable_multiselect(
                     "投入变量",
                     options=numeric_columns,
                     key="input_vars",
-                    help="选择作为投入的变量，至少选择1个",
+                    help_text="选择作为投入的变量，至少选择1个",
                     placeholder="请选择投入变量..."
                 )
             
@@ -944,11 +990,11 @@ def main():
                 st.markdown("**选择【产出变量】**")
                 st.caption("服务成果类指标，如门诊量、手术量等")
                 st.info("💡 **医疗示例**：门诊人次、住院人次、手术例数、出院人数、患者满意度等")
-                output_vars = st.multiselect(
+                output_vars = create_searchable_multiselect(
                     "产出变量",
                     options=numeric_columns,
                     key="output_vars",
-                    help="选择作为产出的变量，至少选择1个",
+                    help_text="选择作为产出的变量，至少选择1个",
                     placeholder="请选择产出变量..."
                 )
             
