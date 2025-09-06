@@ -1,0 +1,17 @@
+[general]
+main_script_path = "streamlit_app.py"
+
+[server]
+port = 8501
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#1a365d"
+backgroundColor = "#e6f7ff"
+secondaryBackgroundColor = "#f0f9ff"
+textColor = "#1a365d"

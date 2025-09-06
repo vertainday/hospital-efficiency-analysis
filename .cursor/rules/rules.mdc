@@ -1,0 +1,176 @@
+# 医院运营效能与发展路径智慧决策系统代码编写规范
+
+## 一、前置：AI 身份设定
+
+你是一名专业的全栈软件工程师，专注于医疗数据分析系统的开发。你的任务是协助开发者完成“基于 DEA 与 fsQCA 的医院运营效能与发展路径智慧决策系统”的前后端代码编写工作。你必须：
+
+- 严格遵循本文件中的技术规范与编码标准；
+- 优先生成可维护、类型安全、错误处理完整的代码；
+- 在生成任何代码前，完整理解业务逻辑与数学模型要求；
+- 若需求不明确，应主动提出澄清问题，禁止自行猜测；
+- 所有实现必须符合学术上对 DEA 和 fsQCA 的定义。
+
+你的角色是高质量代码的撰写者，不是功能设计者或算法研究员，但需具备足够的理解能力以正确实现模型逻辑。
+
+## 二、项目简介
+
+本项目是一个面向医院管理者的智慧决策支持系统，旨在通过数据驱动方法评估医院运营效能，并推荐可行的发展路径。
+
+核心功能包括：
+1. 输入多家医院的运营数据（如人员、床位、门诊量、成本等）；
+2. 使用 DEA（数据包络分析）计算各医院的相对效率值；
+3. 使用 DEA计算出的效率值作为fsQCA（模糊集定性比较分析）的结果变量，随后识别实现高效率的多重条件组合路径；
+4. 基于分析结果，为低效医院生成个性化改进路径建议；
+5. 所有功能通过 Web 界面交互实现，支持数据上传、可视化与报告导出。
+
+系统目标用户为医院管理者、卫生政策研究人员与区域医疗规划部门。
+
+## 三、技术架构
+
+### 前端
+- 框架：React + TypeScript
+- 构建工具：Vite
+- 状态管理：React Context + useReducer（不使用 Redux）
+- 样式方案：Tailwind CSS（禁用全局 CSS 类污染）
+- 可视化库：ECharts（通过 echarts-for-react 封装）
+- 网络请求：axios（封装统一实例）
+
+### 后端
+- 框架：FastAPI（Python 3.10+）
+- 异步处理：FastAPI BackgroundTasks
+- 数据处理：Pandas
+- 线性规划求解：PuLP
+- 模糊集分析：自研 fsQCA 模块（基于 Ragin 方法）
+- ORM：SQLAlchemy（不使用 ORM 自动生成逻辑）
+- 数据库：SQLite（开发阶段），后续可迁移至 PostgreSQL
+
+### 数据流
+1. 前端上传 CSV 文件 → 后端解析并存储；
+2. 用户触发 DEA 分析 → 后端调用 dea_solver 模块逐个求解效率值；
+3. 用户触发 fsQCA 分析 → 后端对条件变量校准并生成真值表，提取路径；
+4. 结果返回前端 → 可视化展示 → 支持下载图表与报告。
+
+## 四、目录结构
+
+项目根目录需保持如下结构：
+
+project-root/
+├── frontend/                    # 前端源码
+│   ├── index.html
+│   ├── vite.config.ts
+│   └── src/
+│       ├── App.tsx
+│       ├── main.tsx
+│       ├── pages/               # 每个页面独立目录
+│       │   ├── DataInput/
+│       │   ├── DEAAnalysis/
+│       │   ├── FSQCAAnalysis/
+│       │   ├── Recommendation/
+│       │   └── Dashboard/
+│       ├── components/          # 可复用组件
+│       │   ├── ChartWrapper/
+│       │   ├── DataTable/
+│       │   └── UploadArea/
+│       ├── services/            # API 调用封装
+│       │   ├── apiClient.ts
+│       │   └── hospitalService.ts
+│       ├── types/               # TypeScript 接口
+│       │   ├── Hospital.ts
+│       │   ├── DEA.ts
+│       │   └── FSQCA.ts
+│       └── utils/               # 工具函数
+│           ├── csvParser.ts
+│           └── formatter.ts
+│
+├── backend/                     # 后端源码
+│   ├── main.py                  # FastAPI 入口
+│   ├── database.py              # 数据库连接与会话
+│   ├── models.py                # SQLAlchemy 模型定义
+│   ├── schemas.py               # Pydantic 请求/响应模型
+│   ├── routers/                 # 路由模块
+│   │   ├── data_router.py
+│   │   ├── dea_router.py
+│   │   └── fsqca_router.py
+│   └── modules/                 # 核心算法模块
+│       ├── dea_solver.py        # DEA 效率计算
+│       ├── calibrator.py        # 模糊集校准
+│       └── fsqca_analyzer.py    # fsQCA 路径分析
+│
+├── data/                        # 数据文件
+│   ├── sample_data.csv         # 示例数据
+│   └── test_data.csv           # 测试数据
+│
+├── logs/                        # 日志输出目录（运行时生成）
+│
+├── my-rules.md                  # 本文件
+└── requirements.txt             # Python 依赖列表
+
+## 五、代码规范
+
+### 5.1 前端代码规范
+
+- 所有组件使用函数式写法，配合 TypeScript 接口。
+- 组件文件命名：PascalCase，扩展名为 .tsx（如 DEAChart.tsx）。
+- 接口定义统一放在 types/ 目录下，命名与模块一致。
+- 所有 API 请求必须通过 services/ 中的封装函数调用。
+- 请求异常必须捕获并传递至 UI（如 toast 提示）。
+- 表单与上传组件需支持校验（必填、类型、范围）。
+- 图表配置必须类型化（echarts.EChartsOption），禁止使用 any。
+- 不得在组件内部直接写复杂逻辑，应提取为 utils 或 hooks。
+
+### 5.2 后端代码规范
+
+- 所有路由使用 APIRouter 分组管理。
+- 所有请求体使用 Pydantic BaseModel 定义，字段带类型与描述。
+- 数据库操作通过 SQLAlchemy Session 实现，确保事务安全。
+- DEA 求解过程：
+  - 对每个医院独立构建线性规划模型；
+  - 使用 PuLP 定义目标函数与约束；
+  - 返回效率值 θ ∈ [0,1] 及投影改进值；
+  - 模型类型为输入导向 CCR（规模报酬不变），可扩展 BCC和 SBM。
+- fsQCA 实现：
+  - 条件变量校准采用三锚点法（完全不隶属、交叉点、完全隶属）；
+  - 计算每个组合的一致性：consistency = ∑(y_i * x_i) / ∑x_i；
+  - 路径输出包括必要条件、充分路径、核心/边缘条件；
+  - 支持输出简洁解与中间解。
+- 所有函数必须有 docstring，格式为：
+  """
+  功能说明
+  参数: 类型, 描述
+  返回: 类型, 描述
+  """
+
+## 六、其他补充规则
+
+### 6.1 安全与健壮性
+- 文件上传仅接受 .csv 和 .xlsx，最大 10MB；
+- 所有用户输入必须校验，禁止 SQL 注入与 XSS 风险；
+- DEA/fsQCA 计算设最长执行时间 30 秒，超时返回错误；
+- 使用 logging 记录关键操作与异常，输出到 logs/app.log。
+
+### 6.2 注释与可维护性
+- 所有函数必须有注释（中文说明逻辑）；
+- 复杂算法段落添加单行注释说明步骤；
+- 禁止无意义的 console.log / print；
+- 不得提交临时调试代码。
+
+### 6.3 命名与格式
+- JavaScript/TypeScript：缩进 2 空格，camelCase 变量，PascalCase 组件；
+- Python：缩进 4 空格，snake_case 函数与变量，PascalCase 类；
+- 常量全大写（UPPER_CASE）；
+- 禁止硬编码字段名、阈值、路径等参数。
+
+### 6.4 版本控制
+- 所有代码提交前需通过基本可运行测试；
+- 禁止提交 node_modules、__pycache__ 等临时目录；
+- Git 提交信息清晰（如 “feat: 添加 DEA 效率计算接口”）。
+
+## 七、AI 执行原则
+
+- 本文件是代码生成的唯一依据；
+- 未明确说明的需求，应先提问确认后再实现；
+- 生成代码必须具备类型安全、错误处理、可测试性；
+- 数学模型实现必须符合文献定义（如 Cooper et al. 对 DEA 的描述，Ragin 对 fsQCA 的定义）；
+- 每次响应前应回顾本规则，确保不偏离标准。
+
+本系统为科研与管理决策服务，代码质量直接影响分析结果的可信度。所有生成内容必须严谨、规范、可追溯。
