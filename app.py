@@ -358,11 +358,19 @@ def validate_numeric_data(df, exclude_columns=['医院ID']):
         if col in exclude_columns:
             continue
             
-        # 检查是否包含非数值数据
+        # 检查是否包含非数值数据（空值除外）
         non_numeric_mask = pd.to_numeric(df[col], errors='coerce').isna()
-        if non_numeric_mask.any():
-            non_numeric_rows = df[non_numeric_mask].index.tolist()
+        # 排除原本就是空值的情况
+        original_nulls = df[col].isna()
+        actual_non_numeric = non_numeric_mask & ~original_nulls
+        
+        if actual_non_numeric.any():
+            non_numeric_rows = df[actual_non_numeric].index.tolist()
             errors.append(f"列'{col}'包含非数值数据，行号：{non_numeric_rows}")
+        elif non_numeric_mask.any():
+            # 只有空值的情况，给出提示
+            null_count = non_numeric_mask.sum()
+            warnings.append(f"列'{col}'包含 {null_count} 个空值，将自动转换为0")
         
         # 检查是否包含负值（对于某些指标）
         if col in ['满意度', '患者满意度', '员工满意度']:
@@ -372,20 +380,145 @@ def validate_numeric_data(df, exclude_columns=['医院ID']):
     
     return errors, warnings
 
-def clean_data(df):
-    """清理数据：删除空值行，转换百分比数据"""
+def process_cleaned_data(df_cleaned, warnings):
+    """处理清理后的数据"""
+    # 显示警告信息
+    if warnings:
+        for warning in warnings:
+            st.markdown(f'<div class="warning-message">{warning}</div>', unsafe_allow_html=True)
+    
+    # 显示数据预览
+    st.markdown("### 📋 数据预览（前5行）")
+    st.markdown('<div class="data-preview">', unsafe_allow_html=True)
+    st.dataframe(df_cleaned.head(), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # 数据统计信息
+    st.markdown("### 📈 数据统计信息")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("医院数量", len(df_cleaned))
+    with col2:
+        st.metric("变量数量", len(df_cleaned.columns) - 1)
+    with col3:
+        st.metric("数据完整性", "100%")
+    
+    # 保存到session state
+    st.session_state['data'] = df_cleaned
+    st.session_state['data_source'] = 'file'
+    
+    # 显示成功消息
+    st.success("✅ 数据加载成功！请继续下一步分析。")
+    
+    # 自动跳转到下一步
+    st.markdown("### 🚀 下一步操作")
+    st.markdown("数据已成功加载，您可以：")
+    st.markdown("1. 进行DEA效率分析")
+    st.markdown("2. 进行fsQCA路径分析")
+    st.markdown("3. 查看数据详情和统计信息")
+
+def detect_and_handle_nulls(df):
+    """检测空值并让用户选择处理方式"""
+    # 统计空值
+    null_counts = df.isnull().sum()
+    total_nulls = null_counts.sum()
+    
+    if total_nulls == 0:
+        return df, None
+    
+    # 显示空值统计信息
+    st.warning(f"⚠️ 检测到数据中包含 {total_nulls} 个空值")
+    
+    # 显示各列空值详情
+    with st.expander("📊 空值详情", expanded=True):
+        null_info = []
+        for col, count in null_counts.items():
+            if count > 0:
+                null_info.append(f"• {col}: {count} 个空值")
+        
+        if null_info:
+            st.write("各列空值分布：")
+            for info in null_info:
+                st.write(info)
+    
+    # 让用户选择处理方式
+    st.markdown("### 🔧 请选择空值处理方式")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        fill_zero_btn = st.button(
+            "🔄 将空值转换为0", 
+            key="fill_zero_btn",
+            help="保留所有数据行，将空值填充为0",
+            type="primary"
+        )
+    
+    with col2:
+        drop_rows_btn = st.button(
+            "🗑️ 删除包含空值的行", 
+            key="drop_rows_btn",
+            help="删除包含任何空值的数据行",
+            type="secondary"
+        )
+    
+    # 根据用户选择返回处理方式
+    if fill_zero_btn:
+        return 'fill_zero'
+    elif drop_rows_btn:
+        return 'drop_rows'
+    else:
+        return None
+
+def clean_data(df, null_handling='fill_zero'):
+    """清理数据：根据选择处理空值，转换百分比数据
+    
+    Args:
+        df: 原始数据框
+        null_handling: 空值处理方式
+            - 'fill_zero': 将空值转换为0
+            - 'drop_rows': 删除包含空值的行
+    
+    Returns:
+        tuple: (清理后的数据框, 处理统计信息)
+    """
     original_rows = len(df)
     
-    # 删除包含空值的行
-    df_cleaned = df.dropna()
-    removed_rows = original_rows - len(df_cleaned)
+    # 创建数据副本
+    df_cleaned = df.copy()
+    
+    # 统计空值数量
+    null_counts = df_cleaned.isnull().sum()
+    total_nulls = null_counts.sum()
+    
+    if null_handling == 'drop_rows':
+        # 删除包含空值的行
+        df_cleaned = df_cleaned.dropna()
+        removed_rows = original_rows - len(df_cleaned)
+        return df_cleaned, {'removed_rows': removed_rows, 'filled_nulls': 0}
+    
+    else:  # fill_zero
+        # 将空值转换为0（除了医院ID列）
+        hospital_id_cols = [col for col in df_cleaned.columns if '医院ID' in col or 'ID' in col]
+        numeric_cols = df_cleaned.select_dtypes(include=[np.number]).columns
+        
+        # 对数值列的空值填充0
+        for col in numeric_cols:
+            if col not in hospital_id_cols:
+                df_cleaned[col] = df_cleaned[col].fillna(0)
+        
+        # 对非数值列的空值也填充0（如果包含数字的话）
+        for col in df_cleaned.columns:
+            if col not in hospital_id_cols and col not in numeric_cols:
+                # 尝试将列转换为数值，无法转换的保持原样
+                df_cleaned[col] = pd.to_numeric(df_cleaned[col], errors='coerce').fillna(0)
+        
+        return df_cleaned, {'removed_rows': 0, 'filled_nulls': total_nulls}
     
     # 转换百分比数据
     percentage_columns = [col for col in df_cleaned.columns if any(keyword in col for keyword in ['满意度', '率', '比例', '百分比'])]
     for col in percentage_columns:
         df_cleaned[col] = df_cleaned[col].apply(convert_percentage_to_decimal)
-    
-    return df_cleaned, removed_rows
 
 def create_manual_input_form(num_hospitals, num_variables):
     """创建手动输入表单"""
@@ -712,37 +845,31 @@ def main():
                             for error in errors:
                                 st.markdown(f'<div class="error-message">{error}</div>', unsafe_allow_html=True)
                         else:
-                            # 清理数据
-                            df_cleaned, removed_rows = clean_data(df)
+                            # 检查是否有空值
+                            null_counts = df.isnull().sum()
+                            total_nulls = null_counts.sum()
                             
-                            if removed_rows > 0:
-                                st.markdown(f'<div class="warning-message">已删除 {removed_rows} 行包含空值的数据</div>', unsafe_allow_html=True)
-                            
-                            if warnings:
-                                for warning in warnings:
-                                    st.markdown(f'<div class="warning-message">{warning}</div>', unsafe_allow_html=True)
-                            
-                            # 显示数据预览
-                            st.markdown("### 📋 数据预览（前5行）")
-                            st.markdown('<div class="data-preview">', unsafe_allow_html=True)
-                            st.dataframe(df_cleaned.head(), use_container_width=True)
-                            st.markdown('</div>', unsafe_allow_html=True)
-                            
-                            # 数据统计信息
-                            st.markdown("### 📈 数据统计信息")
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("医院数量", len(df_cleaned))
-                            with col2:
-                                st.metric("变量数量", len(df_cleaned.columns) - 1)
-                            with col3:
-                                st.metric("数据完整性", f"{(len(df_cleaned) / len(df) * 100):.1f}%")
-                            
-                            # 保存到session state
-                            st.session_state['data'] = df_cleaned
-                            st.session_state['data_source'] = 'file'
-                            
-                            st.success("✅ 数据加载成功！可以进入DEA效率分析模块。")
+                            if total_nulls > 0:
+                                # 显示空值处理选择
+                                null_handling = detect_and_handle_nulls(df)
+                                
+                                if null_handling is None:
+                                    st.info("请选择空值处理方式以继续...")
+                                else:
+                                    # 根据用户选择清理数据
+                                    df_cleaned, stats = clean_data(df, null_handling)
+                                    
+                                    # 显示处理结果
+                                    if null_handling == 'fill_zero':
+                                        st.success(f"✅ 已将 {stats['filled_nulls']} 个空值转换为0")
+                                    else:  # drop_rows
+                                        st.success(f"✅ 已删除 {stats['removed_rows']} 行包含空值的数据")
+                                    
+                                    # 继续处理数据
+                                    process_cleaned_data(df_cleaned, warnings)
+                            else:
+                                # 没有空值，直接处理
+                                process_cleaned_data(df, warnings)
                 
                 except Exception as e:
                     st.markdown(f'<div class="error-message">文件读取错误：{str(e)}</div>', unsafe_allow_html=True)
