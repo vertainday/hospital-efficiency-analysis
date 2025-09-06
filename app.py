@@ -330,6 +330,9 @@ def create_searchable_multiselect(label, options, key, help_text="", placeholder
     返回:
     - 选中的选项列表
     """
+    # 获取当前已选择的变量（从session state中获取）
+    current_selected = st.session_state.get(key, [])
+    
     # 添加搜索框
     search_term = st.text_input(
         f"🔍 搜索{label}",
@@ -347,9 +350,15 @@ def create_searchable_multiselect(label, options, key, help_text="", placeholder
     else:
         filtered_options = options
     
+    # 确保已选择的变量始终在选项列表中（即使它们不在当前搜索结果中）
+    # 这样用户之前的选择不会被清空
+    for selected_item in current_selected:
+        if selected_item not in filtered_options and selected_item in options:
+            filtered_options.append(selected_item)
+    
     # 显示过滤后的选项数量
     if search_term:
-        st.caption(f"找到 {len(filtered_options)} 个匹配的{label}")
+        st.caption(f"找到 {len([opt for opt in filtered_options if search_term.lower() in opt.lower()])} 个匹配的{label}")
     
     # 创建multiselect
     selected = st.multiselect(
@@ -357,7 +366,8 @@ def create_searchable_multiselect(label, options, key, help_text="", placeholder
         options=filtered_options,
         key=key,
         help=help_text,
-        placeholder=placeholder
+        placeholder=placeholder,
+        default=current_selected  # 设置默认值为当前已选择的变量
     )
     
     return selected
