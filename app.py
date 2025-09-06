@@ -1013,11 +1013,43 @@ def main():
                             
                             if results is not None:
                                 # 保存结果到session state
-                                st.session_state['dea_results'] = results
-                                st.session_state['dea_model'] = selected_model
-                                # 将multiselect结果转换为列表保存
-                                st.session_state['input_vars'] = list(input_vars) if input_vars else []
-                                st.session_state['output_vars'] = list(output_vars) if output_vars else []
+                                try:
+                                    # 确保results是可序列化的DataFrame
+                                    if hasattr(results, 'to_dict'):
+                                        # 如果是DataFrame，确保索引重置
+                                        results_copy = results.reset_index(drop=True)
+                                        st.session_state['dea_results'] = results_copy
+                                    else:
+                                        st.session_state['dea_results'] = results
+                                    
+                                    st.session_state['dea_model'] = str(selected_model) if selected_model else ""
+                                    
+                                    # 安全地保存变量列表
+                                    input_vars_list = []
+                                    if input_vars:
+                                        for var in input_vars:
+                                            if isinstance(var, str):
+                                                input_vars_list.append(str(var))
+                                            else:
+                                                input_vars_list.append(str(var))
+                                    
+                                    output_vars_list = []
+                                    if output_vars:
+                                        for var in output_vars:
+                                            if isinstance(var, str):
+                                                output_vars_list.append(str(var))
+                                            else:
+                                                output_vars_list.append(str(var))
+                                    
+                                    st.session_state['input_vars'] = input_vars_list
+                                    st.session_state['output_vars'] = output_vars_list
+                                    
+                                except Exception as e:
+                                    st.error(f"保存分析结果时出错: {str(e)}")
+                                    # 使用基本类型保存
+                                    st.session_state['input_vars'] = []
+                                    st.session_state['output_vars'] = []
+                                    st.session_state['dea_model'] = str(selected_model) if selected_model else ""
                                 
                                 st.success("✅ DEA分析完成！")
                                 
@@ -1236,10 +1268,35 @@ def main():
                             
                             if not fsqca_results.empty:
                                 # 保存结果到session state
-                                st.session_state['fsqca_results'] = fsqca_results
-                                st.session_state['necessity_results'] = necessity_results
-                                # 将条件变量转换为列表保存
-                                st.session_state['condition_vars'] = list(condition_vars) if condition_vars else []
+                                try:
+                                    # 确保DataFrame是可序列化的
+                                    if hasattr(fsqca_results, 'reset_index'):
+                                        fsqca_results_copy = fsqca_results.reset_index(drop=True)
+                                        st.session_state['fsqca_results'] = fsqca_results_copy
+                                    else:
+                                        st.session_state['fsqca_results'] = fsqca_results
+                                    
+                                    if hasattr(necessity_results, 'reset_index'):
+                                        necessity_results_copy = necessity_results.reset_index(drop=True)
+                                        st.session_state['necessity_results'] = necessity_results_copy
+                                    else:
+                                        st.session_state['necessity_results'] = necessity_results
+                                    
+                                    # 安全地保存条件变量列表
+                                    condition_vars_list = []
+                                    if condition_vars:
+                                        for var in condition_vars:
+                                            if isinstance(var, str):
+                                                condition_vars_list.append(str(var))
+                                            else:
+                                                condition_vars_list.append(str(var))
+                                    
+                                    st.session_state['condition_vars'] = condition_vars_list
+                                    
+                                except Exception as e:
+                                    st.error(f"保存fsQCA结果时出错: {str(e)}")
+                                    # 使用基本类型保存
+                                    st.session_state['condition_vars'] = []
                                 
                                 st.success("✅ fsQCA分析完成！")
                                 
