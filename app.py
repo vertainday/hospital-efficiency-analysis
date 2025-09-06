@@ -1305,13 +1305,17 @@ def main():
                                     '效率值'
                                 )
                                 
-                                # 过滤Raw Consistency<0.9的变量
-                                valid_vars = necessity_results[necessity_results['Raw Consistency'] >= 0.9]['条件变量'].tolist()
-                                if valid_vars:
-                                    condition_vars = valid_vars
-                                    st.info(f"✅ 必要性分析完成，保留 {len(valid_vars)} 个有效条件变量")
+                                # 检查必要性分析结果是否有效
+                                if not necessity_results.empty and 'Raw Consistency' in necessity_results.columns:
+                                    # 过滤Raw Consistency<0.9的变量
+                                    valid_vars = necessity_results[necessity_results['Raw Consistency'] >= 0.9]['条件变量'].tolist()
+                                    if valid_vars:
+                                        condition_vars = valid_vars
+                                        st.info(f"✅ 必要性分析完成，保留 {len(valid_vars)} 个有效条件变量")
+                                    else:
+                                        st.warning("⚠️ 所有条件变量的一致性都<0.9，使用原始变量进行分析")
                                 else:
-                                    st.warning("⚠️ 所有条件变量的一致性都<0.9，使用原始变量进行分析")
+                                    st.warning("⚠️ 必要性分析失败或R连接不可用，使用原始变量进行分析")
                             
                             # 执行fsQCA分析
                             fsqca_results = perform_minimization(
@@ -1322,7 +1326,8 @@ def main():
                                 consistency
                             )
                             
-                            if not fsqca_results.empty:
+                            # 检查fsQCA分析结果是否有效
+                            if not fsqca_results.empty and 'Solution Path' in fsqca_results.columns:
                                 # 保存结果到session state
                                 try:
                                     # 确保DataFrame是可序列化的
@@ -1451,7 +1456,21 @@ def main():
                                 else:
                                     st.warning("⚠️ 没有找到有效路径，请尝试调整参数阈值")
                             else:
-                                st.error("❌ fsQCA分析失败，请检查数据和参数设置")
+                                # 检查是否是R连接问题
+                                from qca_analysis import check_r_connection
+                                r_available, r_message = check_r_connection()
+                                if not r_available:
+                                    st.error(f"❌ R连接不可用：{r_message}")
+                                    st.info("💡 **解决方案**：")
+                                    st.markdown("""
+                                    1. 确保已安装R语言环境
+                                    2. 确保已安装rpy2包：`pip install rpy2`
+                                    3. 确保已安装QCA包：在R中运行 `install.packages('QCA')`
+                                    4. 重启应用程序
+                                    """)
+                                else:
+                                    st.error("❌ fsQCA分析失败，请检查数据和参数设置")
+                                    st.info("可能的原因：数据格式不正确、参数设置不当或R包版本不兼容")
     else:
         if 'data' not in st.session_state:
             st.warning("⚠️ 请先在数据输入区中加载数据")
