@@ -1,3 +1,0 @@
-# System package dependencies for Streamlit Community Cloud
-# This file is used to install system-level dependencies via apt-get
-# Currently no system packages are required for this application
