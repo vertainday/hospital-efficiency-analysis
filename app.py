@@ -5,20 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import re
-from pyDEA import DEA
 from scipy.optimize import linprog
 import itertools
 from scipy.stats import pearsonr
 
-try:
-    from pyDEA.core.data_processing import create_dmu
-    from pyDEA.core.models.envelopment_model import EnvelopmentModelInputOriented
-    from pyDEA.core.utils.dea_utils import generate_upper_bound_for_efficiency_score
-    PYDEA_AVAILABLE = True
-    print("pyDEA库导入成功 - 将优先使用pyDEA进行DEA分析")
-except ImportError as e:
-    PYDEA_AVAILABLE = False
-    print(f"pyDEA库不可用 ({e}) - 将使用自定义DEA实现")
+PYDEA_AVAILABLE = False
+print("使用自定义DEA实现进行DEA分析")
 
 class CustomDEA:
     """自定义DEA实现，支持CCR和BCC模型的输入导向和输出导向版本"""
@@ -398,7 +390,7 @@ class CustomDEA:
             return 0.0 if not super_efficiency else 1.0
 
 class DEAWrapper:
-    """DEA分析包装器，优先使用pyDEA，备用自定义实现"""
+    """DEA分析包装器，使用自定义DEA实现"""
     
     def __init__(self, input_data, output_data, dmu_names=None):
         self.input_data = np.array(input_data)
@@ -409,125 +401,27 @@ class DEAWrapper:
         else:
             self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
         
-        # 优先尝试初始化pyDEA
-        self.use_pydea = False
-        self.dea = None
-        
-        if PYDEA_AVAILABLE:
-            try:
-                # pyDEA需要特定的数据结构
-                self._init_pydea()
-                self.use_pydea = True
-                print("✅ 成功初始化pyDEA - 将使用pyDEA库进行DEA分析")
-            except Exception as e:
-                print(f"⚠️ pyDEA初始化失败: {str(e)}，切换到自定义实现")
-                self.dea = CustomDEA(self.input_data, self.output_data)
-                self.use_pydea = False
-        else:
-            # pyDEA不可用，使用自定义实现
-            self.dea = CustomDEA(self.input_data, self.output_data)
-            self.use_pydea = False
-            print("⚠️ pyDEA库不可用，使用自定义DEA实现")
+        # 使用自定义DEA实现
+        self.dea = CustomDEA(self.input_data, self.output_data)
+        print("✅ 使用自定义DEA实现进行DEA分析")
     
-    def _init_pydea(self):
-        """初始化pyDEA模型所需的数据结构"""
-        # 准备数据
-        self.data = self._prepare_pydea_data()
-    
-    def _prepare_pydea_data(self):
-        """将输入输出数据转换为pyDEA所需格式"""
-        # 创建DataFrame格式的数据
-        data_dict = {'DMU': self.dmu_names}
-        
-        # 添加输入列
-        for j in range(self.input_data.shape[1]):
-            data_dict[f'Input{j+1}'] = self.input_data[:, j]
-        
-        # 添加输出列
-        for j in range(self.output_data.shape[1]):
-            data_dict[f'Output{j+1}'] = self.output_data[:, j]
-        
-        # 创建DataFrame
-        df = pd.DataFrame(data_dict)
-        
-        # 定义输入和输出的列索引
-        input_cols = [f'Input{i+1}' for i in range(self.input_data.shape[1])]
-        output_cols = [f'Output{i+1}' for i in range(self.output_data.shape[1])]
-        
-        # 创建DMU列表
-        dmu_list = create_dmu(
-            df, 
-            input_idx=[df.columns.get_loc(col) for col in input_cols],
-            output_idx=[df.columns.get_loc(col) for col in output_cols],
-            dmu_column='DMU'
-        )
-        
-        return dmu_list
-    
-    def _solve_pydea_model(self, model_type):
-        """使用pyDEA求解特定模型"""
-        try:
-            print(f"🔬 使用pyDEA库执行{model_type}模型分析...")
-            
-            # 创建输入导向的包络模型
-            model = EnvelopmentModelInputOriented(generate_upper_bound_for_efficiency_score)
-            
-            # 运行DEA分析
-            solution = model.run(self.data)
-            
-            # 提取效率值
-            efficiency_scores = []
-            for dmu in solution:
-                try:
-                    efficiency = dmu.efficiency
-                    # 确保效率值在[0,1]范围内
-                    if efficiency is not None and not np.isnan(efficiency):
-                        efficiency = min(max(float(efficiency), 0.0), 1.0)
-                    else:
-                        efficiency = 0.0
-                    efficiency_scores.append(efficiency)
-                except Exception as e:
-                    print(f"获取{dmu.name}效率值失败: {e}")
-                    efficiency_scores.append(0.0)
-            
-            print(f"✅ pyDEA {model_type}模型分析完成，计算了{len(efficiency_scores)}个DMU的效率值")
-            return np.array(efficiency_scores)
-            
-        except Exception as e:
-            print(f"❌ pyDEA {model_type}模型求解失败: {e}")
-            # 如果pyDEA失败，返回零效率值
-            return np.zeros(len(self.dmu_names))
     
     # 新增方法：支持不同的模型和方向选择
     def ccr_input_oriented(self):
         """CCR模型 - 输入导向"""
-        if self.use_pydea:
-            return self._solve_pydea_model('CCR')
-        else:
-            return self.dea.ccr_input_oriented()
+        return self.dea.ccr_input_oriented()
     
     def ccr_output_oriented(self):
         """CCR模型 - 输出导向"""
-        if self.use_pydea:
-            # pyDEA暂时只支持输入导向，使用自定义实现
-            return self.dea.ccr_output_oriented()
-        else:
-            return self.dea.ccr_output_oriented()
+        return self.dea.ccr_output_oriented()
     
     def bcc_input_oriented(self):
         """BCC模型 - 输入导向"""
-        if self.use_pydea:
-            return self._solve_pydea_model('BCC')
-        else:
-            return self.dea.bcc_input_oriented()
+        return self.dea.bcc_input_oriented()
     
     def bcc_output_oriented(self):
         """BCC模型 - 输出导向"""
-        if self.use_pydea:
-            # pyDEA暂时只支持输入导向，使用自定义实现
-            return self.dea.bcc_output_oriented()
-        else:
-            return self.dea.bcc_output_oriented()
+        return self.dea.bcc_output_oriented()
     
     # 保持向后兼容的方法
     def ccr(self):
@@ -540,19 +434,11 @@ class DEAWrapper:
     
     def sbm(self, undesirable_outputs=None):
         """SBM模型 - 包含非期望产出的松弛基础模型"""
-        if self.use_pydea:
-            # pyDEA暂时不支持SBM，使用自定义实现
-            return self.dea.sbm(undesirable_outputs=undesirable_outputs)
-        else:
-            return self.dea.sbm(undesirable_outputs=undesirable_outputs)
+        return self.dea.sbm(undesirable_outputs=undesirable_outputs)
     
     def super_sbm(self, undesirable_outputs=None):
         """超效率SBM模型 - 允许效率值大于1"""
-        if self.use_pydea:
-            # pyDEA暂时不支持超效率SBM，使用自定义实现
-            return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
-        else:
-            return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
+        return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
     
     def efficiency(self):
         """默认效率计算方法"""
@@ -1175,14 +1061,11 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         input_data = np.maximum(input_data, 1e-10)  # 避免零值
         output_data = np.maximum(output_data, 1e-10)  # 避免零值
         
-        # 创建DEA对象（使用包装器，优先使用pyDEA）
+        # 创建DEA对象（使用自定义DEA实现）
         dea = DEAWrapper(input_data, output_data, dmu_names=hospital_ids)
         
         # 显示使用的DEA库信息
-        if dea.use_pydea:
-            st.info("🔬 **使用pyDEA库进行DEA分析** - 专业DEA分析库，结果更准确可靠")
-        else:
-            st.warning("⚠️ **使用自定义DEA实现** - pyDEA库不可用，使用备用方案")
+        st.info("🔬 **使用自定义DEA实现进行DEA分析** - 稳定可靠的DEA分析方案")
         
         # 根据模型类型和导向执行分析
         if model_type == 'CCR':
