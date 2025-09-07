@@ -2381,8 +2381,54 @@ def download_dea_results(results):
     返回:
     - csv: CSV格式的字符串
     """
-    csv = results.to_csv(index=False, encoding='utf-8-sig')
-    return csv
+    # 使用专门的编码处理函数，确保中文字符正确显示
+    return create_csv_with_proper_encoding(results)
+
+def download_efficiency_decomposition_results(results):
+    """
+    生成效率分解结果CSV下载
+    
+    参数:
+    - results: 包含效率分解结果的DataFrame
+    
+    返回:
+    - csv: CSV格式的字符串
+    """
+    # 使用专门的编码处理函数，确保中文字符正确显示
+    return create_csv_with_proper_encoding(results)
+
+def create_csv_with_proper_encoding(df):
+    """
+    创建正确编码的CSV字符串，确保中文字符正确显示
+    
+    参数:
+    - df: 包含中文字符的DataFrame
+    
+    返回:
+    - csv: 正确编码的CSV字符串
+    """
+    import io
+    
+    # 方法1：使用utf-8-sig编码（推荐）
+    try:
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+        csv_data = csv_buffer.getvalue()
+        
+        # 确保包含BOM标记
+        if not csv_data.startswith('\ufeff'):
+            csv_data = '\ufeff' + csv_data
+            
+        return csv_data
+    except Exception as e:
+        # 方法2：备用方案，使用utf-8编码
+        try:
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False, encoding='utf-8')
+            return csv_buffer.getvalue()
+        except Exception as e2:
+            # 方法3：最后备用方案
+            return df.to_csv(index=False)
 
 
 
@@ -3598,7 +3644,7 @@ def display_efficiency_decomposition(decomposition_results):
     
     # 提供结果下载
     st.markdown("#### 💾 结果下载")
-    csv_data = results.to_csv(index=False, encoding='utf-8-sig')
+    csv_data = download_efficiency_decomposition_results(results)
     
     st.download_button(
         label="📥 下载效率分解结果 (CSV)",
