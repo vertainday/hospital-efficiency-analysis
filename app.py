@@ -1,766 +1,410 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from io import BytesIO
-import re
-import itertools
-from scipy.stats import pearsonr
+import pandas as pd
 from scipy.optimize import linprog
-import tempfile
 import os
+import sys
+import matplotlib.pyplot as plt
 
-# 使用自定义DEA实现
-print("✅ 使用自定义DEA实现进行DEA分析")
+# ================================
+# 1. CCR / BCC 输入导向模型
+# ================================
+def dea_input_oriented(X, Y, returns='CRS'):
+    """
+    输入导向 DEA 模型（CCR 或 BCC）
+    X: (m, n) 输入矩阵（每列一个 DMU）
+    Y: (s, n) 输出矩阵
+    returns: 'CRS'（规模报酬不变，CCR） or 'VRS'（BCC）
+    """
+    m, n = X.shape
+    s = Y.shape[0]
+    efficiency = np.zeros(n)
+    lambdas = []
 
-class CustomDEA:
-    """自定义DEA实现，支持CCR和BCC模型的输入导向和输出导向版本"""
-    
-    def __init__(self, input_data, output_data):
-        self.input_data = np.array(input_data, dtype=np.float64)
-        self.output_data = np.array(output_data, dtype=np.float64)
-        self.n_dmus = self.input_data.shape[0]
-        self.n_inputs = self.input_data.shape[1]
-        self.n_outputs = self.output_data.shape[1]
-        
-        # 数据验证：只检查负值，允许0值
-        if np.any(self.input_data < 0):
-            raise ValueError("所有投入变量不能为负数")
-        if np.any(self.output_data < 0):
-            raise ValueError("所有产出变量不能为负数")
-        
-        # 将0替换为极小正值，避免除零错误
-        self.input_data = np.maximum(self.input_data, 1e-10)
-        self.output_data = np.maximum(self.output_data, 1e-10)
-        
-        # 检查常数列（可能导致数值问题）
-        for i in range(self.n_inputs):
-            if np.all(self.input_data[:, i] == self.input_data[0, i]):
-                print(f"警告: 投入变量 {i} 是常数列，可能导致数值问题")
-        
-        for r in range(self.n_outputs):
-            if np.all(self.output_data[:, r] == self.output_data[0, r]):
-                print(f"警告: 产出变量 {r} 是常数列，可能导致数值问题")
-        
-        # 数据标准化以提高数值稳定性
-        self.input_scale = np.mean(self.input_data, axis=0)
-        self.output_scale = np.mean(self.output_data, axis=0)
-        
-        # 避免除零
-        self.input_scale = np.maximum(self.input_scale, 1e-8)
-        self.output_scale = np.maximum(self.output_scale, 1e-8)
-        
-        # 标准化数据
-        self.input_data_norm = self.input_data / self.input_scale
-        self.output_data_norm = self.output_data / self.output_scale
-        
-        # 存储松弛变量
-        self.slack_input = {}
-        self.slack_output = {}
-    
-    def ccr_input_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """CCR模型 - 输入导向（规模报酬不变）"""
-        return self._solve_ccr_input_model(input_variable, output_variable, dmu, data, method)
-    
-    def ccr_output_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """CCR模型 - 输出导向（规模报酬不变）"""
-        return self._solve_ccr_output_model(input_variable, output_variable, dmu, data, method)
-    
-    def bcc_input_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """BCC模型 - 输入导向（规模报酬可变）"""
-        return self._solve_bcc_input_model(input_variable, output_variable, dmu, data, method)
-    
-    def bcc_output_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """BCC模型 - 输出导向（规模报酬可变）"""
-        return self._solve_bcc_output_model(input_variable, output_variable, dmu, data, method)
-    
-    def sbm(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """SBM模型 - 基于松弛变量的效率测量模型"""
-        return self._solve_sbm_model(input_variable, desirable_output, undesirable_output, dmu, data, method)
-    
-    def super_sbm(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """超效率SBM模型 - 允许效率值大于1"""
-        return self._solve_super_sbm_model(input_variable, desirable_output, undesirable_output, dmu, data, method)
-    
-    def _solve_ccr_input_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解CCR输入导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为theta
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：max theta (转换为min -theta)
-                c = [0] * dmu_counts + [-1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [-data.loc[i, input_variable[j1]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣₒ (转换为 -∑λⱼyᵣⱼ ≤ -yᵣₒ)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(-data.loc[i, output_variable[j2]])
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = -op1.fun  # 转换回max theta
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"CCR输入导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_ccr_output_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解CCR输出导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为phi
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：min phi
-                c = [0] * dmu_counts + [1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(data.loc[i, input_variable[j1]])
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ (转换为 -∑λⱼyᵣⱼ + φyᵣₒ ≤ 0)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [data.loc[i, output_variable[j2]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = 1.0 / op1.fun  # 效率值 = 1/phi
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"CCR输出导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_bcc_input_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解BCC输入导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为theta
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：max theta (转换为min -theta)
-                c = [0] * dmu_counts + [-1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                A_eq = []
-                b_eq = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [-data.loc[i, input_variable[j1]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣₒ (转换为 -∑λⱼyᵣⱼ ≤ -yᵣₒ)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(-data.loc[i, output_variable[j2]])
-                
-                # BCC模型特有约束：∑λⱼ = 1
-                constraint = [1] * dmu_counts + [0]
-                A_eq.append(constraint)
-                b_eq.append(1)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = -op1.fun  # 转换回max theta
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"BCC输入导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_bcc_output_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解BCC输出导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为phi
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：min phi
-                c = [0] * dmu_counts + [1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                A_eq = []
-                b_eq = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(data.loc[i, input_variable[j1]])
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ (转换为 -∑λⱼyᵣⱼ + φyᵣₒ ≤ 0)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [data.loc[i, output_variable[j2]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # BCC模型特有约束：∑λⱼ = 1
-                constraint = [1] * dmu_counts + [0]
-                A_eq.append(constraint)
-                b_eq.append(1)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = 1.0 / op1.fun  # 效率值 = 1/phi
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"BCC输出导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_sbm_model(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """求解SBM模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s1 = len(desirable_output)  # 期望产出个数
-        s2 = len(undesirable_output)  # 非期望产出个数
-        
-        # 变量结构：
-        # x[:dmu_counts] 为lambda
-        # x[dmu_counts : dmu_counts+1] 为 t
-        # x[dmu_counts+1 : dmu_counts + m + 1] 为投入slack
-        # x[dmu_counts+ 1 + m : dmu_counts + 1 + m + s1] 为期望产出slack
-        # x[dmu_counts + 1 + m + s1 :] 为非期望产出slack
-        total = dmu_counts + m + s1 + s2 + 1
-        
-        # 创建slack列
-        cols = input_variable + desirable_output + undesirable_output
-        newcols = []
-        for j in cols:
-            newcols.append(j + '_slack')
-            res[j + '_slack'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 优化目标：目标函数的系数矩阵
-                c = [0] * dmu_counts + [1] + list(-1 / (m * data.loc[i, input_variable])) + [0] * (s1 + s2)
-                
-                # 约束条件：约束方程的系数矩阵
-                A_eq = [[0] * dmu_counts + [1] + [0] * m +
-                        list(1 / ((s1 + s2) * data.loc[i, desirable_output])) +
-                        list(1 / ((s1 + s2) * data.loc[i, undesirable_output]))]
-                
-                # 约束条件（1）：投入松弛变量为正
-                for j1 in range(m):
-                    list1 = [0] * m
-                    list1[j1] = 1
-                    eq1 = list(data[input_variable[j1]]) + [-data.loc[i, input_variable[j1]]] + list1 + [0] * (s1 + s2)
-                    A_eq.append(eq1)
-                
-                # 约束条件（2）：期望产出松弛变量为正
-                for j2 in range(s1):
-                    list2 = [0] * s1
-                    list2[j2] = -1
-                    eq2 = list(data[desirable_output[j2]]) + [-data.loc[i, desirable_output[j2]]] + [0] * m + list2 + [0] * s2
-                    A_eq.append(eq2)
-                
-                # 约束条件（3）：非期望产出松弛变量为正
-                for j3 in range(s2):
-                    list3 = [0] * s2
-                    list3[j3] = 1
-                    eq3 = list(data[undesirable_output[j3]]) + [-data.loc[i, undesirable_output[j3]]] + [0] * (m + s1) + list3
-                    A_eq.append(eq3)
-                
-                # 约束条件：常数向量
-                b_eq = [1] + [0] * (m + s1 + s2)
-                bounds = [(0, None)] * total  # 约束边界为零
-                
-                # 求解
-                op1 = op.linprog(c=c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = op1.fun
-                    res.loc[i, newcols] = op1.x[dmu_counts + 1:]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, newcols] = 0.0
-                    
-            except Exception as e:
-                print(f"SBM求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, newcols] = 0.0
-        
-        return res
-    
-    def _solve_super_sbm_model(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """求解超效率SBM模型"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)
-        s1 = len(desirable_output)
-        s2 = len(undesirable_output)
-        total = dmu_counts + m + s1 + s2 + 1
-        
-        # 创建slack列
-        cols = input_variable + desirable_output + undesirable_output
-        newcols = []
-        for j in cols:
-            newcols.append(j + '_slack')
-            res[j + '_slack'] = np.nan
-        
-        # 对每个DMU求解（超效率模型排除被评估DMU）
-        for i in range(dmu_counts):
-            try:
-                # 优化目标：目标函数的系数矩阵
-                c = [0] * dmu_counts + [1] + list(-1 / (m * data.loc[i, input_variable])) + [0] * (s1 + s2)
-                
-                # 约束条件：约束方程的系数矩阵
-                A_eq = [[0] * dmu_counts + [1] + [0] * m +
-                        list(1 / ((s1 + s2) * data.loc[i, desirable_output])) +
-                        list(1 / ((s1 + s2) * data.loc[i, undesirable_output]))]
-                
-                # 约束条件（1）：投入松弛变量为正（排除被评估DMU）
-                for j1 in range(m):
-                    list1 = [0] * m
-                    list1[j1] = 1
-                    # 排除被评估DMU的数据
-                    eq1_data = [data.loc[k, input_variable[j1]] if k != i else 0 for k in range(dmu_counts)]
-                    eq1 = eq1_data + [-data.loc[i, input_variable[j1]]] + list1 + [0] * (s1 + s2)
-                    A_eq.append(eq1)
-                
-                # 约束条件（2）：期望产出松弛变量为正（排除被评估DMU）
-                for j2 in range(s1):
-                    list2 = [0] * s1
-                    list2[j2] = -1
-                    eq2_data = [data.loc[k, desirable_output[j2]] if k != i else 0 for k in range(dmu_counts)]
-                    eq2 = eq2_data + [-data.loc[i, desirable_output[j2]]] + [0] * m + list2 + [0] * s2
-                    A_eq.append(eq2)
-                
-                # 约束条件（3）：非期望产出松弛变量为正（排除被评估DMU）
-                for j3 in range(s2):
-                    list3 = [0] * s2
-                    list3[j3] = 1
-                    eq3_data = [data.loc[k, undesirable_output[j3]] if k != i else 0 for k in range(dmu_counts)]
-                    eq3 = eq3_data + [-data.loc[i, undesirable_output[j3]]] + [0] * (m + s1) + list3
-                    A_eq.append(eq3)
-                
-                # 约束条件：常数向量
-                b_eq = [1] + [0] * (m + s1 + s2)
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = max(op1.fun, 1.0)  # 超效率模型允许效率值大于1
-                    res.loc[i, newcols] = op1.x[dmu_counts + 1:]
-                else:
-                    res.loc[i, 'TE'] = 1.0
-                    res.loc[i, newcols] = 0.0
-                    
-            except Exception as e:
-                print(f"超效率SBM求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 1.0
-                res.loc[i, newcols] = 0.0
-        
-        return res
-    
-    # 向后兼容的方法
-    def ccr(self):
-        """CCR模型 - 默认输入导向（向后兼容）"""
-        return self.ccr_input_oriented()
-    
-    def bcc(self):
-        """BCC模型 - 默认输入导向（向后兼容）"""
-        return self.bcc_input_oriented()
-    
-    def efficiency(self):
-        """默认效率计算方法"""
-        return self.ccr_input_oriented()
+    for k in range(n):
+        c = np.zeros(1 + n)
+        c[0] = 1.0  # min θ
 
-# Streamlit应用配置
-st.set_page_config(
-    page_title="基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统",
-    page_icon="",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+        # 约束 A_ub @ [θ, λ] <= b_ub
+        # 输入：sum λ x_ij <= θ x_ik
+        A_inputs = np.zeros((m, 1 + n))
+        A_inputs[:, 0] = -X[:, k]        # -θ x_ik
+        A_inputs[:, 1:] = X              # sum λ x_ij
 
-# 主标题
-st.title("🏥 基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统")
+        # 输出：sum λ y_rj >= y_rk  => -sum λ y_rj <= -y_rk
+        A_outputs = np.zeros((s, 1 + n))
+        A_outputs[:, 1:] = -Y
 
-# 系统状态概览
-st.subheader("📊 系统状态概览")
+        A_ub = np.vstack([A_inputs, A_outputs])
+        b_ub = np.hstack([-X[:, k], -Y[:, k]])
 
-col1, col2, col3, col4 = st.columns(4)
+        # BCC 添加 sum λ_j = 1
+        A_eq = None
+        b_eq = None
+        if returns == 'VRS':
+            A_eq = np.zeros((1, 1 + n))
+            A_eq[0, 1:] = 1.0
+            b_eq = [1.0]
 
-with col1:
-    dea_status = "✅" if 'dea_results' in st.session_state else "❌"
-    st.metric("DEA分析", dea_status)
+        bounds = [(None, None)] + [(0, None) for _ in range(n)]
 
-with col2:
-    qca_status = "✅" if 'qca_results' in st.session_state else "❌"
-    st.metric("QCA分析", qca_status)
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+                      bounds=bounds, method='highs', options={'presolve': True})
 
-with col3:
-    fsqca_status = "✅" if 'fsqca_results' in st.session_state else "❌"
-    st.metric("fsQCA分析", fsqca_status)
-
-with col4:
-    st.metric("DEA库", "✅ 自定义DEA库正常")
-
-# 数据输入区
-st.subheader("📥 数据输入")
-
-# 文件上传
-uploaded_file = st.file_uploader(
-    "请上传包含医院数据的文件",
-    type=['csv', 'xlsx'],
-    help="支持CSV和Excel文件，文件应包含投入变量、产出变量和DMU标识列"
-)
-
-if uploaded_file is not None:
-    try:
-        # 根据文件类型读取数据
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        
-        if file_extension == 'csv':
-            data = pd.read_csv(uploaded_file)
-        elif file_extension == 'xlsx':
-            data = pd.read_excel(uploaded_file)
+        if res.success:
+            efficiency[k] = res.x[0]
+            lambdas.append(res.x[1:])
         else:
-            st.error("❌ 不支持的文件格式，请上传CSV或Excel文件")
-            st.stop()
-        
-        st.session_state['data'] = data
-        
-        st.success(f"✅ 成功上传数据文件，包含 {len(data)} 行数据")
-        
-        # 显示数据预览
-        st.subheader("📋 数据预览")
-        st.dataframe(data.head(10), use_container_width=True)
-        
-        # 列选择
-        st.subheader("🔧 变量配置")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**投入变量选择**")
-            input_cols = st.multiselect(
-                "选择投入变量（如：员工数量、床位数量等）",
-                options=data.columns.tolist(),
-                key="input_vars"
-            )
-        
-        with col2:
-            st.markdown("**产出变量选择**")
-            output_cols = st.multiselect(
-                "选择产出变量（如：门诊量、住院量等）",
-                options=data.columns.tolist(),
-                key="output_vars"
-            )
-        
-        # DMU列选择
-        dmu_col = st.selectbox(
-            "选择DMU标识列",
-            options=data.columns.tolist(),
-            key="dmu_col"
-        )
-        
-        # 非期望产出选择（可选）
-        st.markdown("**非期望产出选择（可选，仅SBM模型使用）**")
-        undesirable_cols = st.multiselect(
-            "选择非期望产出变量（如：医疗事故、投诉等）",
-            options=data.columns.tolist(),
-            key="undesirable_vars"
-        )
-        
-        # 分析按钮
-        if st.button("🚀 开始DEA分析", type="primary"):
-            if not input_cols or not output_cols or not dmu_col:
-                st.error("❌ 请选择投入变量、产出变量和DMU标识列")
-            else:
-                try:
-                    # 创建CustomDEA实例
-                    input_data = data[input_cols].values
-                    output_data = data[output_cols].values
-                    
-                    dea = CustomDEA(input_data, output_data)
-                    
-                    # 模型选择
-                    model_type = st.selectbox(
-                        "选择DEA模型类型",
-                        options=['CCR', 'BCC', 'SBM', 'Super-SBM'],
-                        key="model_type"
-                    )
-                    
-                    orientation = st.selectbox(
-                        "选择导向类型",
-                        options=['input', 'output'],
-                        key="orientation"
-                    )
-                    
-                    # 执行分析
-                    if model_type == 'CCR':
-                        if orientation == 'input':
-                            results = dea.ccr_input_oriented(input_cols, output_cols, dmu_col, data)
-                        else:
-                            results = dea.ccr_output_oriented(input_cols, output_cols, dmu_col, data)
-                    elif model_type == 'BCC':
-                        if orientation == 'input':
-                            results = dea.bcc_input_oriented(input_cols, output_cols, dmu_col, data)
-                        else:
-                            results = dea.bcc_output_oriented(input_cols, output_cols, dmu_col, data)
-                    elif model_type == 'SBM':
-                        if not undesirable_cols:
-                            st.warning("⚠️ SBM模型建议包含非期望产出变量")
-                            undesirable_cols = []
-                        results = dea.sbm(input_cols, output_cols, undesirable_cols, dmu_col, data)
-                    elif model_type == 'Super-SBM':
-                        if not undesirable_cols:
-                            st.warning("⚠️ 超效率SBM模型建议包含非期望产出变量")
-                            undesirable_cols = []
-                        results = dea.super_sbm(input_cols, output_cols, undesirable_cols, dmu_col, data)
-                    
-                    # 保存结果
-                    st.session_state['dea_results'] = results
-                    st.session_state['dea_model_type'] = model_type
-                    st.session_state['dea_orientation'] = orientation
-                    
-                    st.success(f"✅ {model_type}模型分析完成！")
-                    
-                    # 显示结果
-                    st.subheader("📊 分析结果")
-                    st.dataframe(results, use_container_width=True)
-                    
-                    # 效率统计
-                    efficiency_scores = results['TE']
-                    st.subheader("📈 效率统计")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("平均效率", f"{efficiency_scores.mean():.4f}")
-                    with col2:
-                        st.metric("最高效率", f"{efficiency_scores.max():.4f}")
-                    with col3:
-                        st.metric("最低效率", f"{efficiency_scores.min():.4f}")
-                    with col4:
-                        efficient_count = (efficiency_scores >= 0.95).sum()
-                        st.metric("高效DMU数量", f"{efficient_count}/{len(efficiency_scores)}")
-                    
-                    # 效率分布图
-                    fig = px.histogram(
-                        results, 
-                        x='TE', 
-                        title=f'{model_type}模型效率分布',
-                        nbins=20,
-                        color_discrete_sequence=['#1a365d']
-                    )
-                    fig.update_layout(
-                        xaxis_title="效率值",
-                        yaxis_title="频数",
-                        showlegend=False
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"❌ DEA分析失败: {str(e)}")
-        
+            efficiency[k] = np.nan
+            lambdas.append(np.nan * np.ones(n))
+
+    return efficiency, lambdas
+
+
+# ================================
+# 2. CCR / BCC 输出导向模型
+# ================================
+def dea_output_oriented(X, Y, returns='CRS'):
+    """
+    输出导向 DEA 模型
+    最小化 θ，其中 φ = 1/θ 是输出放大倍数
+    """
+    m, n = X.shape
+    s = Y.shape[0]
+    efficiency = np.zeros(n)
+
+    for k in range(n):
+        c = np.zeros(1 + n)
+        c[0] = 1.0  # min θ = 1/φ
+
+        # 约束 1: sum λ x_ij <= x_ik（输入不可增加）
+        A_inputs = np.zeros((m, 1 + n))
+        A_inputs[:, 1:] = X
+        b_inputs = X[:, k]
+
+        # 约束 2: sum λ y_rj >= θ * y_rk
+        # 转为：-sum λ y_rj + θ y_rk <= 0
+        A_outputs = np.zeros((s, 1 + n))
+        A_outputs[:, 0] = Y[:, k]  # θ y_rk 的系数
+        A_outputs[:, 1:] = -Y     # -sum λ y_rj 的系数
+        b_outputs = np.zeros(s)
+
+        A_ub = np.vstack([A_inputs, A_outputs])
+        b_ub = np.hstack([b_inputs, b_outputs])
+
+        # BCC: sum λ_j = 1
+        A_eq = None
+        b_eq = None
+        if returns == 'VRS':
+            A_eq = np.zeros((1, 1 + n))
+            A_eq[0, 1:] = 1.0
+            b_eq = [1.0]
+
+        bounds = [(0, None)] + [(0, None)] * n  # θ >= 0
+
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+                      bounds=bounds, method='highs')
+
+        if res.success:
+            efficiency[k] = res.x[0]
+        else:
+            efficiency[k] = np.nan
+
+    return efficiency
+
+
+# ================================
+# 3. 超效率 CCR/BCC 模型
+# ================================
+def dea_super_efficiency(X, Y, returns='CRS'):
+    """超效率：排除自身"""
+    m, n = X.shape
+    s = Y.shape[0]
+    efficiency = np.zeros(n)
+
+    for k in range(n):
+        # 移除第 k 个 DMU
+        X_other = np.delete(X, k, axis=1)
+        Y_other = np.delete(Y, k, axis=1)
+        nn = n - 1
+
+        c = np.zeros(1 + nn)
+        c[0] = 1.0
+
+        # 输入约束: sum λ x_ij <= θ x_ik
+        A_inputs = np.zeros((m, 1 + nn))
+        A_inputs[:, 0] = -X[:, k]
+        A_inputs[:, 1:] = X_other
+
+        # 输出约束: sum λ y_rj >= y_rk
+        A_outputs = np.zeros((s, 1 + nn))
+        A_outputs[:, 1:] = -Y_other
+
+        A_ub = np.vstack([A_inputs, A_outputs])
+        b_ub = np.hstack([-X[:, k], -Y[:, k]])
+
+        A_eq = None
+        b_eq = None
+        if returns == 'VRS':
+            A_eq = np.zeros((1, 1 + nn))
+            A_eq[0, 1:] = 1.0
+            b_eq = [1.0]
+
+        bounds = [(None, None)] + [(0, None)] * nn
+
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+                      bounds=bounds, method='highs')
+
+        if res.success:
+            efficiency[k] = res.x[0]
+        else:
+            efficiency[k] = np.nan
+
+    return efficiency
+
+
+# ================================
+# 4. 超效率 SBM 模型（Input-oriented, VRS）
+# ================================
+def dea_super_sbm(X, Y):
+    """
+    超效率 SBM 模型（Tone, 2014）Input-oriented, VRS
+    使用 Charnes-Cooper 变换线性化
+    """
+    m, n = X.shape
+    s = Y.shape[0]
+    efficiency = np.zeros(n)
+
+    for k in range(n):
+        X_other = np.delete(X, k, axis=1)  # (m, n-1)
+        Y_other = np.delete(Y, k, axis=1)
+        nn = n - 1
+
+        num_vars = 1 + nn + m + s  # t, μ, s⁻, s⁺
+        c = np.zeros(num_vars)
+
+        # 目标: min ρ = t - (1/m) Σ(s_i⁻ / x_ik)
+        c[0] = 1.0
+        c[1 + nn:1 + nn + m] = -1.0 / m / X[:, k]  # s⁻ 系数，注意这里是负号
+
+        A_eq = []
+        b_eq = []
+
+        # (1) 输入约束: t * x_ik = Σ μ_j x_ij - s_i⁻
+        for i in range(m):
+            row = np.zeros(num_vars)
+            row[0] = X[i, k]
+            row[1:1 + nn] = -X_other[i, :]
+            row[1 + nn + i] = 1
+            A_eq.append(row)
+            b_eq.append(0.0)
+
+        # (2) 输出约束: t * y_rk = Σ μ_j y_rj + s_r⁺
+        for r in range(s):
+            row = np.zeros(num_vars)
+            row[0] = -Y[r, k]
+            row[1:1 + nn] = Y_other[r, :]
+            row[1 + nn + m + r] = 1
+            A_eq.append(row)
+            b_eq.append(0.0)
+
+        # (3) Σ μ_j = t
+        row = np.zeros(num_vars)
+        row[0] = -1
+        row[1:1 + nn] = 1
+        A_eq.append(row)
+        b_eq.append(0.0)
+
+        A_eq = np.array(A_eq)
+        b_eq = np.array(b_eq)
+
+        bounds = [(1e-7, None)]          # t
+        bounds += [(0, None)] * nn      # μ_j
+        bounds += [(0, None)] * m       # s⁻
+        bounds += [(0, None)] * s       # s⁺
+
+        res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds,
+                      method='highs', options={'presolve': True})
+
+        if res.success:
+            efficiency[k] = res.fun  # ρ = objective value
+        else:
+            efficiency[k] = np.nan
+
+    return efficiency
+
+
+# ================================
+# 5. 数据读取函数
+# ================================
+def read_data(file_path):
+    """读取数据文件，支持CSV和Excel格式"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+    
+    ext = os.path.splitext(file_path)[-1].lower()
+    try:
+        if ext == '.csv':
+            df = pd.read_csv(file_path, encoding='utf-8')
+        elif ext in ['.xlsx', '.xls']:
+            df = pd.read_excel(file_path)
+        else:
+            raise ValueError("仅支持 .csv 和 .xlsx 格式的文件")
     except Exception as e:
-        st.error(f"❌ 文件读取失败: {str(e)}")
+        raise ValueError(f"文件读取失败: {e}")
+    
+    if df.empty:
+        raise ValueError("文件为空或无法读取数据")
 
-# 侧边栏信息
-with st.sidebar:
-    st.markdown("## 🏥 系统信息")
-    st.info("""
-    **系统版本**: v1.0
-    
-    **DEA模型支持**:
-    - CCR模型（规模报酬不变）
-    - BCC模型（规模报酬可变）
-    - SBM模型（基于松弛变量）
-    - 超效率SBM模型
-    
-    **技术特点**:
-    - 纯自定义DEA实现
-    - 支持输入/输出导向
-    - 支持非期望产出
-    - 线性规划求解
-    """)
-    
-    st.markdown("## 📋 使用说明")
-    st.markdown("""
-    1. 上传包含医院数据的CSV或Excel文件
-    2. 选择投入变量和产出变量
-    3. 选择DMU标识列
-    4. 选择DEA模型类型和导向
-    5. 点击"开始DEA分析"按钮
-    6. 查看分析结果和效率统计
-    """)
+    print("📊 数据预览：")
+    print(df.head())
 
+    try:
+        num_inputs = int(input(f"🔢 请输入输入变量个数（共 {len(df.columns)} 列）: "))
+        num_outputs = len(df.columns) - num_inputs
+        if num_outputs <= 0:
+            raise ValueError("输出列数必须 > 0")
+    except:
+        print("⚠️ 默认使用前2列为输入")
+        num_inputs = 2
+        num_outputs = len(df.columns) - 2
+
+    # 检查第一列是否为字符串类型（DMU名称）
+    first_col_str = df.iloc[:, 0].dtype == 'object'
+    
+    # 进一步验证：检查第一列是否包含非数值数据
+    if first_col_str:
+        try:
+            # 尝试将第一列转换为数值，如果失败则认为是DMU名称
+            pd.to_numeric(df.iloc[:, 0], errors='raise')
+            # 如果转换成功，说明第一列是数值，不是DMU名称
+            first_col_str = False
+        except (ValueError, TypeError):
+            # 转换失败，确认第一列是DMU名称
+            first_col_str = True
+    
+    if first_col_str:
+        DMUs = df.iloc[:, 0].values
+        X = df.iloc[:, 1:num_inputs + 1].values.T
+        Y = df.iloc[:, num_inputs + 1:].values.T
+    else:
+        DMUs = [f"DMU{i + 1}" for i in range(len(df))]
+        X = df.iloc[:, :num_inputs].values.T
+        Y = df.iloc[:, num_inputs:].values.T
+
+    # 数据验证
+    if X.shape[1] == 0:
+        raise ValueError("没有有效的输入数据")
+    if Y.shape[1] == 0:
+        raise ValueError("没有有效的输出数据")
+    
+    # 检查是否有负值或NaN
+    if np.any(X < 0) or np.any(np.isnan(X)):
+        raise ValueError("输入数据不能包含负值或缺失值")
+    if np.any(Y < 0) or np.any(np.isnan(Y)):
+        raise ValueError("输出数据不能包含负值或缺失值")
+
+    return X, Y, DMUs, df.columns.tolist()
+
+
+# ================================
+# 6. 主程序 + 可视化
+# ================================
+def main(file_path):
+    try:
+        X, Y, dmus, col_names = read_data(file_path)
+    except Exception as e:
+        print("❌ 数据读取失败:", e)
+        return
+
+    print(f"\n✅ 共 {X.shape[1]} 个 DMU，{X.shape[0]} 个输入，{Y.shape[0]} 个输出")
+
+    # 存储结果
+    results = pd.DataFrame({"DMU": dmus})
+
+    # === 1. CCR Input ===
+    print("⏳ 计算 CCR 输入导向...")
+    eff, _ = dea_input_oriented(X, Y, 'CRS')
+    results['CCR_Input'] = np.round(eff, 4)
+
+    # === 2. BCC Input ===
+    print("⏳ 计算 BCC 输入导向...")
+    eff, _ = dea_input_oriented(X, Y, 'VRS')
+    results['BCC_Input'] = np.round(eff, 4)
+
+    # === 3. CCR Output ===
+    print("⏳ 计算 CCR 输出导向...")
+    eff = dea_output_oriented(X, Y, 'CRS')
+    results['CCR_Output'] = np.round(eff, 4)
+
+    # === 4. BCC Output ===
+    print("⏳ 计算 BCC 输出导向...")
+    eff = dea_output_oriented(X, Y, 'VRS')
+    results['BCC_Output'] = np.round(eff, 4)
+
+    # === 5. Super CCR ===
+    print("⏳ 计算 超效率 CCR...")
+    eff = dea_super_efficiency(X, Y, 'CRS')
+    results['Super_CCR'] = np.round(eff, 4)
+
+    # === 6. Super BCC ===
+    print("⏳ 计算 超效率 BCC...")
+    eff = dea_super_efficiency(X, Y, 'VRS')
+    results['Super_BCC'] = np.round(eff, 4)
+
+    # === 7. Super SBM ===
+    print("⏳ 计算 超效率 SBM (Input-VRS)...")
+    eff = dea_super_sbm(X, Y)
+    results['Super_SBM'] = np.round(eff, 4)
+
+    # === 输出结果 ===
+    print("\n" + "="*60)
+    print("🎯 完整 DEA 分析结果")
+    print("="*60)
+    print(results.to_string(index=False))
+
+    # === 保存 Excel ===
+    output_file = "DEA_All_Models_Results.xlsx"
+    results.to_excel(output_file, index=False)
+    print(f"\n✅ 结果已保存至: {output_file}")
+
+    # ================================
+    # 可视化
+    # ================================
+    plt.figure(figsize=(14, 8))
+
+    x = np.arange(len(dmus))
+    width = 0.12
+
+    cols_to_plot = ['CCR_Input', 'BCC_Input', 'CCR_Output', 'BCC_Output', 'Super_CCR', 'Super_BCC', 'Super_SBM']
+    colors = ['skyblue', 'lightcoral', 'gold', 'lightgreen', 'plum', 'lightsalmon', 'purple']
+    labels = ['CCR-In', 'BCC-In', 'CCR-Out', 'BCC-Out', 'Sup-CCR', 'Sup-BCC', 'Sup-SBM']
+
+    for i, (col, color, label) in enumerate(zip(cols_to_plot, colors, labels)):
+        plt.bar(x + i * width, results[col], width, label=label, color=color, alpha=0.8)
+
+    plt.xlabel('DMU')
+    plt.ylabel('Efficiency Score')
+    plt.title('DEA 模型效率对比（所有模型）')
+    plt.xticks(x + 3 * width, dmus, rotation=45)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.ylim(0, max(results.max(numeric_only=True)) * 1.1)
+    plt.tight_layout()
+    plt.savefig("DEA_All_Models_Comparison.png", dpi=150)
+    plt.show()
+
+    print("📈 图表已保存: DEA_All_Models_Comparison.png")
+
+
+# ================================
+# 7. 启动入口
+# ================================
 if __name__ == "__main__":
-    pass
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+    else:
+        filepath = input("📄 请输入数据文件路径（.csv 或 .xlsx）: ").strip()
+
+    if not os.path.exists(filepath):
+        print("❌ 文件不存在！")
+    else:
+        main(filepath)
