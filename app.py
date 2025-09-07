@@ -5,160 +5,145 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import re
-# 使用Pyfrontier库进行DEA分析
 from scipy.optimize import linprog
 import itertools
 from scipy.stats import pearsonr
 
 try:
-    from pyfrontier import DEA
-    PYFRONTIER_AVAILABLE = True
-    print(" Pyfrontier库导入成功")
+    from pyDEA.core.data_processing.read_data import read_data_from_array
+    from pyDEA.core.DEA_model import Model
+    from pyDEA.core.params import Param
+    PYDEA_AVAILABLE = True
+    print(" pyDEA库导入成功")
 except ImportError:
-    PYFRONTIER_AVAILABLE = False
-    print(" Pyfrontier库不可用，使用自定义DEA实现")
-
-class CustomDEA:
-    """自定义DEA实现，支持CCR、BCC和SBM模型（备用方案）"""
-    
-    def __init__(self, input_data, output_data):
-        self.input_data = np.array(input_data)
-        self.output_data = np.array(output_data)
-        self.n_dmus = self.input_data.shape[0]
-        self.n_inputs = self.input_data.shape[1]
-        self.n_outputs = self.output_data.shape[1]
-        
-    def ccr(self):
-        """CCR模型 - 规模报酬不变"""
-        return self._solve_dea_model(constant_returns=True)
-    
-    def bcc(self):
-        """BCC模型 - 规模报酬可变"""
-        return self._solve_dea_model(constant_returns=False)
-    
-    def sbm(self):
-        """SBM模型 - 非径向模型"""
-        return self._solve_sbm_model()
-    
-    def efficiency(self):
-        """默认效率计算方法"""
-        return self.ccr()
-    
-    def _solve_dea_model(self, constant_returns=True):
-        """求解DEA模型"""
-        efficiency_scores = []
-        
-        for i in range(self.n_dmus):
-            # 目标函数：最大化效率
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = -1  # 效率分数
-            
-            # 约束条件
-            A_ub = []
-            b_ub = []
-            
-            # 输入约束
-            for j in range(self.n_inputs):
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = self.input_data[:, j]
-                constraint[0] = -self.input_data[i, j]
-                A_ub.append(constraint)
-                b_ub.append(0)
-            
-            # 输出约束
-            for j in range(self.n_outputs):
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = -self.output_data[:, j]
-                constraint[0] = self.output_data[i, j]
-                A_ub.append(constraint)
-                b_ub.append(0)
-            
-            # 规模报酬约束
-            if constant_returns:
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = 1
-                A_ub.append(constraint)
-                b_ub.append(1)
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = -1
-                A_ub.append(constraint)
-                b_ub.append(-1)
-            
-            # 非负约束
-            bounds = [(0, None) for _ in range(self.n_dmus + 1)]
-            
-            try:
-                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-                if result.success:
-                    efficiency_scores.append(-result.fun)
-                else:
-                    efficiency_scores.append(0.0)
-            except:
-                efficiency_scores.append(0.0)
-        
-        return np.array(efficiency_scores)
-    
-    def _solve_sbm_model(self):
-        """求解SBM模型（简化版本）"""
-        # 简化的SBM实现，使用CCR作为近似
-        return self.ccr()
-
-# 创建DEA包装器类
+    PYDEA_AVAILABLE = False
+    print(" pyDEA库不可用，将使用自定义DEA实现")
 class DEAWrapper:
-    """DEA分析包装器，优先使用Pyfrontier，备用自定义实现"""
+    """DEA分析包装器，优先使用pyDEA，备用自定义实现"""
     
-    def __init__(self, input_data, output_data):
+    def __init__(self, input_data, output_data, dmu_names=None):
         self.input_data = np.array(input_data)
         self.output_data = np.array(output_data)
+        self.dmu_names = dmu_names or [f'DMU{i+1}' for i in range(len(input_data))]
         
-        if PYFRONTIER_AVAILABLE:
+        # 尝试初始化pyDEA
+        self.use_pydea = False
+        self.dea = None
+        
+        if PYDEA_AVAILABLE:
             try:
-                # 使用Pyfrontier
-                self.dea = DEA(self.input_data, self.output_data)
-                self.use_pyfrontier = True
-                print("✓ 使用Pyfrontier进行DEA分析")
+                # pyDEA需要特定的数据结构
+                self._init_pydea()
+                self.use_pydea = True
+                print("✓ 成功初始化pyDEA")
             except Exception as e:
-                print(f"⚠️ Pyfrontier初始化失败: {e}，使用自定义实现")
+                print(f"⚠️ pyDEA初始化失败: {str(e)}，将使用自定义实现")
                 self.dea = CustomDEA(self.input_data, self.output_data)
-                self.use_pyfrontier = False
+                self.use_pydea = False
         else:
             # 使用自定义实现
             self.dea = CustomDEA(self.input_data, self.output_data)
-            self.use_pyfrontier = False
+            self.use_pydea = False
             print("✓ 使用自定义DEA实现")
+    
+    def _init_pydea(self):
+        """初始化pyDEA模型所需的数据结构"""
+        # 创建参数对象
+        self.params = Param()
+        
+        # 设置基本参数
+        self.params.add_parameter('RETURN_TO_SCALE', 'CRS')  # 默认为CCR
+        self.params.add_parameter('MODEL_ORIENTATION', 'INPUT')
+        self.params.add_parameter('INPUT_OUTPUT_ORIENTATION', 'IN')
+        self.params.add_parameter('PRINT_RESULTS', 'false')
+        self.params.add_parameter('SOLVE_MULTIPLIER', 'true')
+        
+        # 准备数据
+        self.data = self._prepare_pydea_data()
+    
+    def _prepare_pydea_data(self):
+        """将输入输出数据转换为pyDEA所需格式"""
+        # 创建空数据字典
+        data = {}
+        
+        # 添加DMU名称
+        for i, dmu_name in enumerate(self.dmu_names):
+            # 添加输入数据
+            for j in range(self.input_data.shape[1]):
+                data[(dmu_name, f'Input{j+1}')] = self.input_data[i, j]
+            
+            # 添加输出数据
+            for j in range(self.output_data.shape[1]):
+                data[(dmu_name, f'Output{j+1}')] = self.output_data[i, j]
+        
+        # 读取数据到pyDEA格式
+        return read_data_from_array(
+            data,
+            dmu_names=self.dmu_names,
+            input_names=[f'Input{i+1}' for i in range(self.input_data.shape[1])],
+            output_names=[f'Output{i+1}' for i in range(self.output_data.shape[1])]
+        )
+    
+    def _solve_pydea_model(self, model_type):
+        """使用pyDEA求解特定模型"""
+        # 设置模型参数
+        if model_type == 'CCR':
+            self.params.update_parameter('RETURN_TO_SCALE', 'CRS')
+        elif model_type == 'BCC':
+            self.params.update_parameter('RETURN_TO_SCALE', 'VRS')
+        elif model_type == 'SBM':
+            # pyDEA不直接支持SBM，使用CCR作为替代
+            print("⚠️ pyDEA不直接支持SBM模型，将使用CCR模型作为替代")
+            self.params.update_parameter('RETURN_TO_SCALE', 'CRS')
+        else:
+            raise ValueError(f"不支持的模型类型: {model_type}")
+        
+        # 创建并求解模型
+        model = Model(self.data, self.params)
+        model.run()
+        
+        # 获取结果
+        results = model.get_results()
+        
+        # 提取效率值
+        efficiency_scores = []
+        for dmu in self.dmu_names:
+            efficiency = results.efficiency_score(dmu)
+            efficiency_scores.append(efficiency)
+        
+        return np.array(efficiency_scores)
     
     def ccr(self):
         """CCR模型 - 规模报酬不变"""
-        if self.use_pyfrontier:
+        if self.use_pydea:
             try:
-                # Pyfrontier的CCR模型
-                return self.dea.ccr()
+                return self._solve_pydea_model('CCR')
             except Exception as e:
-                print(f"⚠️ Pyfrontier CCR失败: {e}，切换到自定义实现")
+                print(f"⚠️ pyDEA CCR失败: {str(e)}，切换到自定义实现")
                 return self.dea.ccr()
         else:
             return self.dea.ccr()
     
     def bcc(self):
         """BCC模型 - 规模报酬可变"""
-        if self.use_pyfrontier:
+        if self.use_pydea:
             try:
-                # Pyfrontier的BCC模型
-                return self.dea.bcc()
+                return self._solve_pydea_model('BCC')
             except Exception as e:
-                print(f"⚠️ Pyfrontier BCC失败: {e}，切换到自定义实现")
+                print(f"⚠️ pyDEA BCC失败: {str(e)}，切换到自定义实现")
                 return self.dea.bcc()
         else:
             return self.dea.bcc()
     
     def sbm(self):
         """SBM模型 - 非径向模型"""
-        if self.use_pyfrontier:
+        if self.use_pydea:
             try:
-                # Pyfrontier的SBM模型
+                # pyDEA不直接支持SBM，使用自定义实现
+                print("⚠️ pyDEA不支持SBM模型，使用自定义实现")
                 return self.dea.sbm()
             except Exception as e:
-                print(f"⚠️ Pyfrontier SBM失败: {e}，切换到自定义实现")
+                print(f"⚠️ SBM处理失败: {str(e)}")
                 return self.dea.sbm()
         else:
             return self.dea.sbm()
@@ -170,7 +155,7 @@ class DEAWrapper:
 # 为了保持兼容性，创建DEA别名
 DEA = DEAWrapper
 
-# 导入QCA分析模块（纯Python实现）
+# 导入QCA分析模块
 QCA_AVAILABLE = False
 try:
     from qca_analysis import (
@@ -182,7 +167,7 @@ try:
         perform_complete_qca_analysis
     )
     QCA_AVAILABLE = True
-    print("✓ QCA模块（纯Python实现）导入成功")
+    print("✓ QCA模块导入成功")
 except ImportError as e:
     print(f"❌ QCA模块导入失败: {e}")
     # 创建占位符函数以避免运行时错误
@@ -198,8 +183,22 @@ except ImportError as e:
         return pd.DataFrame()
     def perform_complete_qca_analysis(*args, **kwargs):
         return pd.DataFrame()
+    QCA_AVAILABLE = False
 except Exception as e:
     print(f"❌ QCA模块初始化失败: {e}")
+    # 创建占位符函数以避免运行时错误
+    def check_r_connection():
+        return False, "QCA模块不可用"
+    def perform_necessity_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_sufficiency_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_truth_table_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_minimization(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_complete_qca_analysis(*args, **kwargs):
+        return pd.DataFrame()
     QCA_AVAILABLE = False
 
 # 设置页面配置
@@ -718,7 +717,6 @@ def create_manual_input_form(num_hospitals, num_variables):
     # 创建DataFrame
     df = pd.DataFrame(data_rows)
     return df
-
 def perform_dea_analysis(data, input_vars, output_vars, model_type):
     """
     执行DEA效率分析
@@ -738,33 +736,16 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type):
         input_data = data[input_vars].values
         output_data = data[output_vars].values
         
-        # 创建DEA对象
-        dea = DEA(input_data, output_data)
+        # 创建DEA对象（使用包装器）
+        dea = DEAWrapper(input_data, output_data, dmu_names=hospital_ids)
         
         # 根据模型类型执行分析
         if model_type == 'CCR':
-            # 尝试不同的方法名
-            if hasattr(dea, 'ccr'):
-                efficiency_scores = dea.ccr()
-            elif hasattr(dea, 'CCR'):
-                efficiency_scores = dea.CCR()
-            else:
-                # 使用默认方法
-                efficiency_scores = dea.efficiency()
+            efficiency_scores = dea.ccr()
         elif model_type == 'BCC':
-            if hasattr(dea, 'bcc'):
-                efficiency_scores = dea.bcc()
-            elif hasattr(dea, 'BCC'):
-                efficiency_scores = dea.BCC()
-            else:
-                efficiency_scores = dea.efficiency()
+            efficiency_scores = dea.bcc()
         elif model_type == 'SBM':
-            if hasattr(dea, 'sbm'):
-                efficiency_scores = dea.sbm()
-            elif hasattr(dea, 'SBM'):
-                efficiency_scores = dea.SBM()
-            else:
-                efficiency_scores = dea.efficiency()
+            efficiency_scores = dea.sbm()
         else:
             raise ValueError(f"不支持的模型类型: {model_type}")
         
@@ -815,7 +796,7 @@ def create_efficiency_chart(results):
         results, 
         x='医院ID', 
         y='效率值',
-        title='🏥 医院效率排名',
+        title='医院效率排名',
         labels={'效率值': '效率值', '医院ID': '医院ID'},
         color='效率值',
         color_continuous_scale='RdYlGn'
@@ -1032,7 +1013,7 @@ def main():
             # 设置参数
             col1, col2 = st.columns(2)
             with col1:
-                num_hospitals = st.slider("医院数量", min_value=3, max_value=20, value=5, help="选择3-20家医院")
+                num_hospitals = st.slider("医院数量", min_value=3, max_value=20, value=5, help="选择1-1000家医院")
             with col2:
                 num_variables = st.slider("变量数量", min_value=2, max_value=10, value=3, help="选择2-10个变量")
             
@@ -1563,7 +1544,7 @@ def main():
                                 else:
                                     st.warning("⚠️ 没有找到有效路径，请尝试调整参数阈值")
                             else:
-                                # 使用纯Python实现，无需R连接
+                                # QCA分析失败
                                 st.error("❌ fsQCA分析失败，请检查数据和参数设置")
                                 st.info("💡 **可能的原因**：")
                                 st.markdown("""
