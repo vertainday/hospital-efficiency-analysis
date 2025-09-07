@@ -154,8 +154,19 @@ class CustomDEA:
         
         if result.success:
             theta = -result.fun  # 因为目标函数是-θ
+            # 确保效率值在合理范围内
+            theta = max(0.0, min(theta, 1.0))
             return theta
         else:
+            # 如果求解失败，尝试使用不同的求解器
+            try:
+                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='interior-point')
+                if result.success:
+                    theta = -result.fun
+                    theta = max(0.0, min(theta, 1.0))
+                    return theta
+            except:
+                pass
             return 0.0
     
     def _solve_output_oriented(self, dmu_idx, model):
@@ -220,8 +231,24 @@ class CustomDEA:
         if result.success:
             phi = result.fun
             # 输出导向的效率值是1/φ
-            return 1.0 / phi if phi > 0 else 1.0
+            if phi > 0:
+                efficiency = 1.0 / phi
+                return max(0.0, min(efficiency, 1.0))
+            else:
+                return 1.0
         else:
+            # 如果求解失败，尝试使用不同的求解器
+            try:
+                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='interior-point')
+                if result.success:
+                    phi = result.fun
+                    if phi > 0:
+                        efficiency = 1.0 / phi
+                        return max(0.0, min(efficiency, 1.0))
+                    else:
+                        return 1.0
+            except:
+                pass
             return 0.0
     
     # SBM模型相关方法
@@ -1073,6 +1100,14 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 efficiency_scores = dea.ccr_input_oriented()
             elif orientation == 'output':
                 efficiency_scores = dea.ccr_output_oriented()
+            else:
+                raise ValueError(f"不支持的导向类型: {orientation}")
+        elif model_type == 'CCR-VRS':
+            # CCR-VRS模型实际上就是BCC模型
+            if orientation == 'input':
+                efficiency_scores = dea.bcc_input_oriented()
+            elif orientation == 'output':
+                efficiency_scores = dea.bcc_output_oriented()
             else:
                 raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'BCC':
@@ -2138,6 +2173,12 @@ def main():
                         "scenario": "🏥 **适用场景**：同等级医院效率对比（如三甲医院间对比）",
                         "features": "• 假设规模报酬不变\n• 适合规模相近的医院\n• 计算相对效率"
                     },
+                    "CCR模型（规模报酬可变）": {
+                        "value": "CCR-VRS",
+                        "description": "CCR模型的规模报酬可变版本，考虑规模效应",
+                        "scenario": "🏥 **适用场景**：不同规模医院对比，考虑规模报酬可变",
+                        "features": "• 考虑规模报酬可变\n• 适合不同规模医院\n• 分离技术效率与规模效率"
+                    },
                     "BCC模型（规模报酬可变）": {
                         "value": "BCC", 
                         "description": "适用于不同等级医院对比，考虑规模报酬可变（推荐）",
@@ -2171,9 +2212,9 @@ def main():
                 st.info(f"💡 {model_info['description']}")
                 st.markdown(f"**模型特点：**\n{model_info['features']}")
                 
-                # 导向选择（仅对CCR和BCC模型显示）
+                # 导向选择（仅对CCR、CCR-VRS和BCC模型显示）
                 orientation = 'input'  # 默认值
-                if model_info['value'] in ['CCR', 'BCC']:
+                if model_info['value'] in ['CCR', 'CCR-VRS', 'BCC']:
                     st.markdown("**📐 选择分析导向**")
                     orientation_options = {
                         "输入导向（推荐）": {
