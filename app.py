@@ -2274,62 +2274,89 @@ def display_dea_analysis_report(analysis_report):
             st.write(f"• {suggestion}")
     
     # 高效医院展示
-    if analysis_report['efficient_units']:
+    if 'effectiveness_analysis' in analysis_report and analysis_report['effectiveness_analysis']['strong_efficient']:
         st.markdown("### 🏆 高效医院（效率值 = 1.0）")
-        efficient_df = pd.DataFrame(analysis_report['efficient_units'])
+        efficient_df = pd.DataFrame(analysis_report['effectiveness_analysis']['strong_efficient'])
+        # 重命名列以匹配显示需求
+        if 'dmu_id' in efficient_df.columns:
+            efficient_df = efficient_df.rename(columns={'dmu_id': 'hospital_id'})
         st.dataframe(efficient_df[['hospital_id', 'efficiency']], use_container_width=True)
     
     # 低效医院分析
-    if analysis_report['inefficient_units']:
+    if 'effectiveness_analysis' in analysis_report and analysis_report['effectiveness_analysis']['non_efficient']:
         st.markdown("### 📉 低效医院分析")
         
-        for unit in analysis_report['inefficient_units']:
-            with st.expander(f"🏥 {unit['hospital_id']} (效率值: {unit['efficiency']:.3f})", expanded=False):
+        for unit in analysis_report['effectiveness_analysis']['non_efficient']:
+            dmu_id = unit['dmu_id']
+            with st.expander(f"🏥 {dmu_id} (效率值: {unit['efficiency']:.3f})", expanded=False):
                 
-                # 投入分析
-                st.markdown("**投入分析**")
-                input_data = []
-                for var, data in unit['analysis']['input_analysis'].items():
-                    input_data.append({
-                        '变量': var,
-                        '医院值': f"{data['hospital_value']:.2f}",
-                        '平均值': f"{data['average_value']:.2f}",
-                        '相对表现': f"{data['relative_performance']:.2f}",
-                        '状态': data['status']
-                    })
-                st.dataframe(pd.DataFrame(input_data), use_container_width=True)
-                
-                # 产出分析
-                st.markdown("**产出分析**")
-                output_data = []
-                for var, data in unit['analysis']['output_analysis'].items():
-                    output_data.append({
-                        '变量': var,
-                        '医院值': f"{data['hospital_value']:.2f}",
-                        '平均值': f"{data['average_value']:.2f}",
-                        '相对表现': f"{data['relative_performance']:.2f}",
-                        '状态': data['status']
-                    })
-                st.dataframe(pd.DataFrame(output_data), use_container_width=True)
+                # 检查是否有详细分析数据
+                if 'detailed_unit_analysis' in analysis_report and dmu_id in analysis_report['detailed_unit_analysis']:
+                    detailed_unit = analysis_report['detailed_unit_analysis'][dmu_id]
+                    
+                    # 显示效率状态和解释
+                    st.markdown(f"**效率状态**: {detailed_unit['status']}")
+                    st.markdown(f"**解释**: {detailed_unit['interpretation']}")
+                    
+                    # 投入分析
+                    st.markdown("**投入变量值**")
+                    input_data = []
+                    for var, value in detailed_unit['input_values'].items():
+                        input_data.append({
+                            '变量': var,
+                            '医院值': f"{value:.2f}"
+                        })
+                    st.dataframe(pd.DataFrame(input_data), use_container_width=True)
+                    
+                    # 产出分析
+                    st.markdown("**产出变量值**")
+                    output_data = []
+                    for var, value in detailed_unit['output_values'].items():
+                        output_data.append({
+                            '变量': var,
+                            '医院值': f"{value:.2f}"
+                        })
+                    st.dataframe(pd.DataFrame(output_data), use_container_width=True)
+                else:
+                    st.info("详细分析数据不可用")
     
     # 改进建议
-    if analysis_report['improvement_suggestions']:
+    if 'improvement_suggestions' in analysis_report and analysis_report['improvement_suggestions']:
         st.markdown("### 💡 改进建议")
         
-        for hospital_id, suggestions in analysis_report['improvement_suggestions'].items():
-            if suggestions:
-                with st.expander(f"🏥 {hospital_id} 改进建议", expanded=False):
-                    for suggestion in suggestions:
-                        priority_color = "🔴" if suggestion['priority'] == '高' else "🟡"
-                        st.markdown(f"{priority_color} **{suggestion['type']}**: {suggestion['suggestion']}")
+        suggestions = analysis_report['improvement_suggestions']
+        
+        # 整体建议
+        if suggestions.get('overall_suggestions'):
+            st.markdown("**整体建议**:")
+            for suggestion in suggestions['overall_suggestions']:
+                st.write(f"• {suggestion}")
+        
+        # 效率改进建议
+        if suggestions.get('efficiency_improvement'):
+            st.markdown("**效率改进建议**:")
+            for suggestion in suggestions['efficiency_improvement']:
+                st.write(f"• {suggestion}")
+        
+        # 资源优化建议
+        if suggestions.get('resource_optimization'):
+            st.markdown("**资源优化建议**:")
+            for suggestion in suggestions['resource_optimization']:
+                st.write(f"• {suggestion}")
+        
+        # 产出提升建议
+        if suggestions.get('output_enhancement'):
+            st.markdown("**产出提升建议**:")
+            for suggestion in suggestions['output_enhancement']:
+                st.write(f"• {suggestion}")
     
     # 基准分析
-    if analysis_report['benchmark_analysis']['best_dmu']:
+    if 'benchmark_analysis' in analysis_report and analysis_report['benchmark_analysis'].get('best_dmu'):
         st.markdown("### 🎯 基准分析")
         best_dmu = analysis_report['benchmark_analysis']['best_dmu']
         st.info(f"🏆 **基准DMU**: {best_dmu['id']} (效率值: {best_dmu['efficiency']:.3f})")
         
-        if analysis_report['benchmark_analysis']['comparisons']:
+        if analysis_report['benchmark_analysis'].get('comparisons'):
             st.markdown("**与基准DMU的差距分析**")
             comparison_data = []
             for dmu_id, gaps in analysis_report['benchmark_analysis']['comparisons'].items():
