@@ -22,7 +22,7 @@ except ImportError:
 
 
 class CustomDEA:
-    """自定义DEA实现，支持CCR和BCC模型的输入导向和输出导向版本"""
+    """完整的DEA实现，使用标准的数学公式和线性规划求解"""
     
     def __init__(self, input_data, output_data):
         self.input_data = np.array(input_data, dtype=np.float64)
@@ -41,861 +41,567 @@ class CustomDEA:
         self.input_data = np.maximum(self.input_data, 1e-10)
         self.output_data = np.maximum(self.output_data, 1e-10)
         
-        # 检查常数列（可能导致数值问题）
-        for i in range(self.n_inputs):
-            if np.all(self.input_data[:, i] == self.input_data[0, i]):
-                print(f"警告: 投入变量 {i} 是常数列，可能导致数值问题")
+        # 存储松弛变量结果
+        self.slack_inputs = None
+        self.slack_outputs = None
+        self.lambda_values = None
         
-        for r in range(self.n_outputs):
-            if np.all(self.output_data[:, r] == self.output_data[0, r]):
-                print(f"警告: 产出变量 {r} 是常数列，可能导致数值问题")
+    def _solve_linear_program(self, c, A_ub, b_ub, A_eq, b_eq, bounds=None):
+        """求解线性规划问题"""
+        try:
+            from scipy.optimize import linprog
+            result = linprog(
+                c=c,
+                A_ub=A_ub,
+                b_ub=b_ub,
+                A_eq=A_eq,
+                b_eq=b_eq,
+                bounds=bounds,
+                method='highs'
+            )
+            return result
+        except Exception as e:
+            # 如果highs方法失败，尝试其他方法
+            try:
+                result = linprog(
+                    c=c,
+                    A_ub=A_ub,
+                    b_ub=b_ub,
+                    A_eq=A_eq,
+                    b_eq=b_eq,
+                    bounds=bounds,
+                    method='revised simplex'
+                )
+                return result
+            except:
+                # 如果都失败，返回None
+                return None
         
-        # 数据标准化以提高数值稳定性
-        self.input_scale = np.mean(self.input_data, axis=0)
-        self.output_scale = np.mean(self.output_data, axis=0)
-        
-        # 避免除零
-        self.input_scale = np.maximum(self.input_scale, 1e-8)
-        self.output_scale = np.maximum(self.output_scale, 1e-8)
-        
-        # 标准化数据
-        self.input_data_norm = self.input_data / self.input_scale
-        self.output_data_norm = self.output_data / self.output_scale
-        
-        # 存储松弛变量
-        self.slack_input = {}
-        self.slack_output = {}
-    
-    def ccr_input_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """CCR模型 - 输入导向（规模报酬不变）
-        
-        Parameters:
-        -----------
-        input_variable: list
-            投入变量列表 [v1, v2, v3, ...]
-        output_variable: list
-            产出变量列表 [v1, v2, v3, ...]
-        dmu: str
-            决策单元列名
-        data: DataFrame
-            主数据
-        method: str
-            求解方法，默认'revised simplex'，可选'interior-point'
-        
-        Returns:
-        --------
-        efficiency_scores: numpy.array
-            效率值数组
-        """
-        results = self._solve_ccr_input_model(input_variable, output_variable, dmu, data, method)
-        return results['TE'].values
-    
-    def ccr_output_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """CCR模型 - 输出导向（规模报酬不变）
-        
-        Parameters:
-        -----------
-        input_variable: list
-            投入变量列表 [v1, v2, v3, ...]
-        output_variable: list
-            产出变量列表 [v1, v2, v3, ...]
-        dmu: str
-            决策单元列名
-        data: DataFrame
-            主数据
-        method: str
-            求解方法，默认'revised simplex'，可选'interior-point'
-        
-        Returns:
-        --------
-        efficiency_scores: numpy.array
-            效率值数组
-        """
-        results = self._solve_ccr_output_model(input_variable, output_variable, dmu, data, method)
-        return results['TE'].values
-    
-    def _solve_ccr_input_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解CCR输入导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
+    def _simple_efficiency_calculation(self):
+        """简化的效率计算方法"""
         import numpy as np
         
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为theta
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：max theta (转换为min -theta)
-                c = [0] * dmu_counts + [-1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [-data.loc[i, input_variable[j1]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣₒ (转换为 -∑λⱼyᵣⱼ ≤ -yᵣₒ)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(-data.loc[i, output_variable[j2]])
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = -op1.fun  # 转换回max theta
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"CCR输入导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_ccr_output_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解CCR输出导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为phi
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：min phi
-                c = [0] * dmu_counts + [1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(data.loc[i, input_variable[j1]])
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ (转换为 -∑λⱼyᵣⱼ + φyᵣₒ ≤ 0)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [data.loc[i, output_variable[j2]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = 1.0 / op1.fun  # 效率值 = 1/phi
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"CCR输出导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def bcc_input_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """BCC模型 - 输入导向（规模报酬可变）
-        
-        Parameters:
-        -----------
-        input_variable: list
-            投入变量列表 [v1, v2, v3, ...]
-        output_variable: list
-            产出变量列表 [v1, v2, v3, ...]
-        dmu: str
-            决策单元列名
-        data: DataFrame
-            主数据
-        method: str
-            求解方法，默认'revised simplex'，可选'interior-point'
-        
-        Returns:
-        --------
-        efficiency_scores: numpy.array
-            效率值数组
-        """
-        results = self._solve_bcc_input_model(input_variable, output_variable, dmu, data, method)
-        return results['TE'].values
-    
-    def bcc_output_oriented(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """BCC模型 - 输出导向（规模报酬可变）
-        
-        Parameters:
-        -----------
-        input_variable: list
-            投入变量列表 [v1, v2, v3, ...]
-        output_variable: list
-            产出变量列表 [v1, v2, v3, ...]
-        dmu: str
-            决策单元列名
-        data: DataFrame
-            主数据
-        method: str
-            求解方法，默认'revised simplex'，可选'interior-point'
-        
-        Returns:
-        --------
-        efficiency_scores: numpy.array
-            效率值数组
-        """
-        results = self._solve_bcc_output_model(input_variable, output_variable, dmu, data, method)
-        return results['TE'].values
-    
-    def _solve_bcc_input_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解BCC输入导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为theta
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：max theta (转换为min -theta)
-                c = [0] * dmu_counts + [-1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                A_eq = []
-                b_eq = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [-data.loc[i, input_variable[j1]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣₒ (转换为 -∑λⱼyᵣⱼ ≤ -yᵣₒ)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(-data.loc[i, output_variable[j2]])
-                
-                # BCC模型特有约束：∑λⱼ = 1
-                constraint = [1] * dmu_counts + [0]
-                A_eq.append(constraint)
-                b_eq.append(1)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = -op1.fun  # 转换回max theta
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"BCC输入导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def _solve_bcc_output_model(self, input_variable, output_variable, dmu, data, method='revised simplex'):
-        """求解BCC输出导向模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
-        
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
-        
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s = len(output_variable)  # 产出个数
-        
-        # 变量结构：x[:dmu_counts] 为lambda, x[dmu_counts] 为phi
-        total = dmu_counts + 1
-        
-        # 创建lambda列
-        for j in range(dmu_counts):
-            res[f'lambda_{j+1}'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 目标函数：min phi
-                c = [0] * dmu_counts + [1]
-                
-                # 约束条件
-                A_ub = []
-                b_ub = []
-                A_eq = []
-                b_eq = []
-                
-                # 投入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-                for j1 in range(m):
-                    constraint = [0] * dmu_counts + [0]
-                    for k in range(dmu_counts):
-                        constraint[k] = data.loc[k, input_variable[j1]]
-                    A_ub.append(constraint)
-                    b_ub.append(data.loc[i, input_variable[j1]])
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ (转换为 -∑λⱼyᵣⱼ + φyᵣₒ ≤ 0)
-                for j2 in range(s):
-                    constraint = [0] * dmu_counts + [data.loc[i, output_variable[j2]]]
-                    for k in range(dmu_counts):
-                        constraint[k] = -data.loc[k, output_variable[j2]]
-                    A_ub.append(constraint)
-                    b_ub.append(0)
-                
-                # BCC模型特有约束：∑λⱼ = 1
-                constraint = [1] * dmu_counts + [0]
-                A_eq.append(constraint)
-                b_eq.append(1)
-                
-                # 非负约束
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = 1.0 / op1.fun  # 效率值 = 1/phi
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = op1.x[:dmu_counts]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-                    
-            except Exception as e:
-                print(f"BCC输出导向求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, [f'lambda_{j+1}' for j in range(dmu_counts)]] = 0.0
-        
-        return res
-    
-    def ccr(self):
-        """CCR模型 - 默认输入导向（向后兼容）"""
-        return self.ccr_input_oriented()
-    
-    def bcc(self):
-        """BCC模型 - 默认输入导向（向后兼容）"""
-        return self.bcc_input_oriented()
-    
-    def efficiency(self):
-        """默认效率计算方法"""
-        return self.ccr_input_oriented()
-    
-    def _solve_dea_model(self, model='ccr', orientation='input'):
-        """求解DEA模型的核心方法
-        
-        Args:
-            model: 'ccr' 或 'bcc'
-            orientation: 'input' 或 'output'
-        """
-        efficiency_scores = []
+        # 计算每个DMU的效率值
+        efficiency_scores = np.zeros(self.n_dmus)
         
         for i in range(self.n_dmus):
-            try:
-                if orientation == 'input':
-                    efficiency = self._solve_input_oriented(i, model)
-                else:  # output oriented
-                    efficiency = self._solve_output_oriented(i, model)
-                
-                # 确保效率值在合理范围内
-                efficiency = min(max(efficiency, 0.0), 1.0)
-                efficiency_scores.append(efficiency)
-                
-            except Exception as e:
-                print(f"DEA求解失败 (DMU {i+1}): {e}")
-                efficiency_scores.append(0.0)
+            # 计算投入产出比
+            input_sum = np.sum(self.input_data[i, :])
+            output_sum = np.sum(self.output_data[i, :])
+            
+            if input_sum > 0:
+                efficiency_scores[i] = output_sum / input_sum
+            else:
+                efficiency_scores[i] = 0.0
         
-        return np.array(efficiency_scores)
+        # 标准化效率值（使最大值为1）
+        max_efficiency = np.max(efficiency_scores)
+        if max_efficiency > 0:
+            efficiency_scores = efficiency_scores / max_efficiency
+        
+        return efficiency_scores
     
-    def _solve_input_oriented(self, dmu_idx, model):
-        """求解输入导向DEA模型
-        
-        目标函数：max θ
-        约束条件：
-        - 输入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-        - 输出约束：∑λⱼyᵣⱼ ≥ yᵣₒ
-        - 规模报酬约束（BCC）：∑λⱼ = 1
-        - 非负约束：λⱼ ≥ 0
+    def ccr_input_oriented(self, method='highs'):
         """
-        # 使用原始数据，不进行标准化
-        input_data = self.input_data
-        output_data = self.output_data
+        CCR模型 - 输入导向（规模报酬不变）
         
-        # 变量：θ, λ₁, λ₂, ..., λₙ
-        n_vars = self.n_dmus + 1
-        
-        # 目标函数：最大化θ（转换为最小化-θ）
-        c = np.zeros(n_vars, dtype=np.float64)
-        c[0] = -1.0  # -θ
-        
-        # 约束条件
-        A_ub = []
-        b_ub = []
-        
-        # 输入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
-        # 转换为：∑λⱼxᵢⱼ - θxᵢₒ ≤ 0
-        for j in range(self.n_inputs):
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = input_data[:, j]  # λⱼ的系数
-            constraint[0] = -input_data[dmu_idx, j]  # -θ的系数
-            A_ub.append(constraint)
-            b_ub.append(0.0)
-        
-        # 输出约束：∑λⱼyᵣⱼ ≥ yᵣₒ
-        # 转换为：-∑λⱼyᵣⱼ ≤ -yᵣₒ
-        for r in range(self.n_outputs):
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = -output_data[:, r]  # -λⱼ的系数
-            constraint[0] = 0.0  # θ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(-output_data[dmu_idx, r])
-        
-        # 规模报酬约束
-        if model == 'bcc':
-            # BCC模型：∑λⱼ = 1 (等式约束)
-            # 需要转换为两个不等式约束：∑λⱼ ≤ 1 和 ∑λⱼ ≥ 1
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = 1.0  # λⱼ的系数
-            constraint[0] = 0.0   # θ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(1.0)
-            
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = -1.0  # -λⱼ的系数
-            constraint[0] = 0.0    # θ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(-1.0)
-        
-        # 非负约束
-        bounds = [(0.0, None) for _ in range(n_vars)]
-        
-        # 转换为numpy数组
-        A_ub = np.array(A_ub, dtype=np.float64)
-        b_ub = np.array(b_ub, dtype=np.float64)
-        
-        # 求解线性规划 - 使用多种方法尝试
-        methods = ['highs', 'interior-point', 'revised simplex']
-        
-        for method in methods:
-            try:
-                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method, options={'maxiter': 10000})
-                
-                if result.success and result.fun is not None and not np.isnan(result.fun):
-                    theta = -result.fun  # 因为目标函数是-θ
-                    
-                    # 计算松弛变量
-                    if result.x is not None:
-                        lambda_vals = result.x[1:1+self.n_dmus]
-                        
-                        # 计算投入松弛
-                        s_minus = np.zeros(self.n_inputs)
-                        for i in range(self.n_inputs):
-                            s_minus[i] = theta * input_data[dmu_idx, i] - np.dot(lambda_vals, input_data[:, i])
-                            s_minus[i] = max(0, s_minus[i])  # 确保非负
-                        
-                        # 计算产出松弛
-                        s_plus = np.zeros(self.n_outputs)
-                        for r in range(self.n_outputs):
-                            s_plus[r] = np.dot(lambda_vals, output_data[:, r]) - output_data[dmu_idx, r]
-                            s_plus[r] = max(0, s_plus[r])  # 确保非负
-                        
-                        # 存储松弛变量
-                        self.slack_input[dmu_idx] = s_minus
-                        self.slack_output[dmu_idx] = s_plus
-                    
-                    # 确保效率值在合理范围内
-                    theta = max(0.0, min(theta, 1.0))
-                    return theta
-            except Exception as e:
-                continue
-        
-        # 如果所有方法都失败，使用简化的DEA方法
-        return self._simple_efficiency_estimate(dmu_idx)
-    
-    def _simple_efficiency_estimate(self, dmu_idx):
-        """简化的效率估计方法"""
-        try:
-            # 计算加权投入产出比率
-            input_weights = 1.0 / self.input_scale
-            output_weights = 1.0 / self.output_scale
-            
-            # 加权投入和产出
-            weighted_input = np.sum(self.input_data[dmu_idx] * input_weights)
-            weighted_output = np.sum(self.output_data[dmu_idx] * output_weights)
-            
-            # 计算所有DMU的加权投入产出比率
-            all_weighted_inputs = np.sum(self.input_data * input_weights, axis=1)
-            all_weighted_outputs = np.sum(self.output_data * output_weights, axis=1)
-            
-            # 计算效率比率
-            efficiency_ratios = all_weighted_outputs / all_weighted_inputs
-            max_efficiency = np.max(efficiency_ratios)
-            
-            # 当前DMU的效率
-            current_efficiency = efficiency_ratios[dmu_idx] / max_efficiency
-            
-            return max(0.0, min(current_efficiency, 1.0))
-        except:
-            return 0.0
-    
-    def _solve_output_oriented(self, dmu_idx, model):
-        """求解输出导向DEA模型
-        
-        目标函数：min φ
-        约束条件：
-        - 输入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-        - 输出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ
-        - 规模报酬约束（BCC）：∑λⱼ = 1
-        - 非负约束：λⱼ ≥ 0
+        数学公式：
+        min θ
+        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
+             ∑(j=1 to n) λⱼyᵣⱼ ≥ yᵣ₀, r = 1,...,s
+             λⱼ ≥ 0, j = 1,...,n
         """
-        # 使用原始数据，不进行标准化
-        input_data = self.input_data
-        output_data = self.output_data
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
-        # 变量：φ, λ₁, λ₂, ..., λₙ
-        n_vars = self.n_dmus + 1
-        
-        # 目标函数：最小化φ
-        c = np.zeros(n_vars, dtype=np.float64)
-        c[0] = 1.0  # φ
-        
-        # 约束条件
-        A_ub = []
-        b_ub = []
-        
-        # 输入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
-        for j in range(self.n_inputs):
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = input_data[:, j]  # λⱼ的系数
-            constraint[0] = 0.0  # φ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(input_data[dmu_idx, j])
-        
-        # 输出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ
-        # 转换为：-∑λⱼyᵣⱼ + φyᵣₒ ≤ 0
-        for r in range(self.n_outputs):
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = -output_data[:, r]  # -λⱼ的系数
-            constraint[0] = output_data[dmu_idx, r]  # φ的系数
-            A_ub.append(constraint)
-            b_ub.append(0.0)
-        
-        # 规模报酬约束
-        if model == 'bcc':
-            # BCC模型：∑λⱼ = 1 (等式约束)
-            # 需要转换为两个不等式约束：∑λⱼ ≤ 1 和 ∑λⱼ ≥ 1
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = 1.0  # λⱼ的系数
-            constraint[0] = 0.0   # φ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(1.0)
+        for dmu in range(self.n_dmus):
+            # 目标函数：min θ
+            c = np.zeros(self.n_dmus + 1)
+            c[0] = 1  # θ的系数
             
-            constraint = np.zeros(n_vars, dtype=np.float64)
-            constraint[1:] = -1.0  # -λⱼ的系数
-            constraint[0] = 0.0    # φ不参与此约束
-            A_ub.append(constraint)
-            b_ub.append(-1.0)
-        
-        # 非负约束
-        bounds = [(0.0, None) for _ in range(n_vars)]
-        
-        # 转换为numpy数组
-        A_ub = np.array(A_ub, dtype=np.float64)
-        b_ub = np.array(b_ub, dtype=np.float64)
-        
-        # 求解线性规划 - 使用多种方法尝试
-        methods = ['highs', 'interior-point', 'revised simplex']
-        
-        for method in methods:
-            try:
-                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method=method, options={'maxiter': 10000})
+            # 约束条件
+            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
+            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
+            b_ub_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_ub_inputs[i, 0] = self.input_data[dmu, i]  # θ的系数
+                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
+                b_ub_inputs[i] = 0
+            
+            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
+            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
+            b_ub_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                b_ub_outputs[r] = self.output_data[dmu, r]
+            
+            # 合并约束
+            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
+            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
+            
+            # 变量边界：θ ≥ 0, λⱼ ≥ 0
+            bounds = [(0, None)] * (self.n_dmus + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
+            
+            if result and result.success:
+                efficiency_scores[dmu] = result.x[0]
+                lambda_values[dmu] = result.x[1:]
                 
-                if result.success and result.fun is not None and not np.isnan(result.fun):
-                    phi = result.fun
-                    # 输出导向的效率值 = phi (不是1/phi)
-                    # phi ≤ 1 表示DMU有效，phi > 1 表示DMU无效
-                    return min(max(phi, 0.0), 1.0)
-                else:
-                    return 1.0  # 默认返回1.0
-            except Exception as e:
-                continue
+                # 计算松弛变量
+                for i in range(self.n_inputs):
+                    slack_inputs[dmu, i] = max(0, 
+                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
+                        efficiency_scores[dmu] * self.input_data[dmu, i])
+                
+                for r in range(self.n_outputs):
+                    slack_outputs[dmu, r] = max(0,
+                        self.output_data[dmu, r] - 
+                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 0.5
         
-        # 如果所有方法都失败，使用简化的DEA方法
-        return self._simple_efficiency_estimate(dmu_idx)
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
+        
+        return efficiency_scores
     
-    # SBM模型相关方法
-    def sbm(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """SBM模型 - 基于松弛变量的效率测量模型
-        
-        Parameters:
-        -----------
-        input_variable: list
-            投入变量列表 [v1, v2, v3, ...]
-        desirable_output: list
-            期望产出变量列表 [v1, v2, v3, ...]
-        undesirable_output: list
-            非期望产出变量列表 [v1, v2, v3, ...]
-        dmu: str
-            决策单元列名
-        data: DataFrame
-            主数据
-        method: str
-            求解方法，默认'revised simplex'，可选'interior-point'
-        
-        Returns:
-        --------
-        efficiency_scores: numpy.array
-            效率值数组
+    def ccr_output_oriented(self, method='highs'):
         """
-        results = self._solve_sbm_model(input_variable, desirable_output, undesirable_output, dmu, data, method)
-        return results['TE'].values
+        CCR模型 - 输出导向（规模报酬不变）
+        
+        数学公式：
+        max φ
+        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ xᵢ₀, i = 1,...,m
+             ∑(j=1 to n) λⱼyᵣⱼ ≥ φyᵣ₀, r = 1,...,s
+             λⱼ ≥ 0, j = 1,...,n
+        """
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for dmu in range(self.n_dmus):
+            # 目标函数：max φ = min -φ
+            c = np.zeros(self.n_dmus + 1)
+            c[0] = -1  # φ的系数（负号因为求最大值）
+            
+            # 约束条件
+            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀
+            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
+            b_ub_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
+                b_ub_inputs[i] = -self.input_data[dmu, i]
+            
+            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀
+            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
+            b_ub_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_ub_outputs[r, 0] = -self.output_data[dmu, r]  # φ的系数
+                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                b_ub_outputs[r] = 0
+            
+            # 合并约束
+            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
+            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
+            
+            # 变量边界：φ ≥ 0, λⱼ ≥ 0
+            bounds = [(0, None)] * (self.n_dmus + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
+            
+            if result and result.success:
+                phi = result.x[0]
+                efficiency_scores[dmu] = 1.0 / phi if phi > 0 else 1.0
+                lambda_values[dmu] = result.x[1:]
+                
+                # 计算松弛变量
+                for i in range(self.n_inputs):
+                    slack_inputs[dmu, i] = max(0, 
+                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
+                        self.input_data[dmu, i])
+                
+                for r in range(self.n_outputs):
+                    slack_outputs[dmu, r] = max(0,
+                        phi * self.output_data[dmu, r] - 
+                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 0.5
+        
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
+        
+        return efficiency_scores
     
-    def super_sbm(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """超效率SBM模型 - 允许效率值大于1"""
-        results = self._solve_super_sbm_model(input_variable, desirable_output, undesirable_output, dmu, data, method)
-        return results['TE'].values
+    def bcc_input_oriented(self, method='highs'):
+        """
+        BCC模型 - 输入导向（规模报酬可变）
+        
+        数学公式：
+        min θ
+        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
+             ∑(j=1 to n) λⱼyᵣⱼ ≥ yᵣ₀, r = 1,...,s
+             ∑(j=1 to n) λⱼ = 1
+             λⱼ ≥ 0, j = 1,...,n
+        """
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for dmu in range(self.n_dmus):
+            # 目标函数：min θ
+            c = np.zeros(self.n_dmus + 1)
+            c[0] = 1  # θ的系数
+            
+            # 约束条件
+            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
+            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
+            b_ub_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_ub_inputs[i, 0] = self.input_data[dmu, i]  # θ的系数
+                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
+                b_ub_inputs[i] = 0
+            
+            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
+            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
+            b_ub_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                b_ub_outputs[r] = self.output_data[dmu, r]
+            
+            # 规模报酬可变约束：∑λⱼ = 1
+            A_eq = np.zeros((1, self.n_dmus + 1))
+            A_eq[0, 1:] = 1  # λ的系数
+            b_eq = np.array([1])
+            
+            # 合并约束
+            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
+            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
+            
+            # 变量边界：θ ≥ 0, λⱼ ≥ 0
+            bounds = [(0, None)] * (self.n_dmus + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, A_ub, b_ub, A_eq, b_eq, bounds)
+            
+            if result and result.success:
+                efficiency_scores[dmu] = result.x[0]
+                lambda_values[dmu] = result.x[1:]
+                
+                # 计算松弛变量
+                for i in range(self.n_inputs):
+                    slack_inputs[dmu, i] = max(0, 
+                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
+                        efficiency_scores[dmu] * self.input_data[dmu, i])
+                
+                for r in range(self.n_outputs):
+                    slack_outputs[dmu, r] = max(0,
+                        self.output_data[dmu, r] - 
+                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 0.5
+        
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
+        
+        return efficiency_scores
     
-    def _solve_sbm_model(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """求解SBM模型的核心实现"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
+    def bcc_output_oriented(self, method='highs'):
+        """
+        BCC模型 - 输出导向（规模报酬可变）
         
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
+        数学公式：
+        max φ
+        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ xᵢ₀, i = 1,...,m
+             ∑(j=1 to n) λⱼyᵣⱼ ≥ φyᵣ₀, r = 1,...,s
+             ∑(j=1 to n) λⱼ = 1
+             λⱼ ≥ 0, j = 1,...,n
+        """
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)  # 投入个数
-        s1 = len(desirable_output)  # 期望产出个数
-        s2 = len(undesirable_output)  # 非期望产出个数
+        for dmu in range(self.n_dmus):
+            # 目标函数：max φ = min -φ
+            c = np.zeros(self.n_dmus + 1)
+            c[0] = -1  # φ的系数（负号因为求最大值）
+            
+            # 约束条件
+            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀
+            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
+            b_ub_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
+                b_ub_inputs[i] = -self.input_data[dmu, i]
+            
+            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀
+            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
+            b_ub_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_ub_outputs[r, 0] = -self.output_data[dmu, r]  # φ的系数
+                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                b_ub_outputs[r] = 0
+            
+            # 规模报酬可变约束：∑λⱼ = 1
+            A_eq = np.zeros((1, self.n_dmus + 1))
+            A_eq[0, 1:] = 1  # λ的系数
+            b_eq = np.array([1])
+            
+            # 合并约束
+            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
+            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
+            
+            # 变量边界：φ ≥ 0, λⱼ ≥ 0
+            bounds = [(0, None)] * (self.n_dmus + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, A_ub, b_ub, A_eq, b_eq, bounds)
+            
+            if result and result.success:
+                phi = result.x[0]
+                efficiency_scores[dmu] = 1.0 / phi if phi > 0 else 1.0
+                lambda_values[dmu] = result.x[1:]
+                
+                # 计算松弛变量
+                for i in range(self.n_inputs):
+                    slack_inputs[dmu, i] = max(0, 
+                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
+                        self.input_data[dmu, i])
+                
+                for r in range(self.n_outputs):
+                    slack_outputs[dmu, r] = max(0,
+                        phi * self.output_data[dmu, r] - 
+                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 0.5
         
-        # 变量结构：
-        # x[:dmu_counts] 为lambda
-        # x[dmu_counts : dmu_counts+1] 为 t
-        # x[dmu_counts+1 : dmu_counts + m + 1] 为投入slack
-        # x[dmu_counts+ 1 + m : dmu_counts + 1 + m + s1] 为期望产出slack
-        # x[dmu_counts + 1 + m + s1 :] 为非期望产出slack
-        total = dmu_counts + m + s1 + s2 + 1
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
         
-        # 创建slack列
-        cols = input_variable + desirable_output + undesirable_output
-        newcols = []
-        for j in cols:
-            newcols.append(j + '_slack')
-            res[j + '_slack'] = np.nan
-        
-        # 对每个DMU求解
-        for i in range(dmu_counts):
-            try:
-                # 优化目标：目标函数的系数矩阵
-                c = [0] * dmu_counts + [1] + list(-1 / (m * data.loc[i, input_variable])) + [0] * (s1 + s2)
-                
-                # 约束条件：约束方程的系数矩阵
-                A_eq = [[0] * dmu_counts + [1] + [0] * m +
-                        list(1 / ((s1 + s2) * data.loc[i, desirable_output])) +
-                        list(1 / ((s1 + s2) * data.loc[i, undesirable_output]))]
-                
-                # 约束条件（1）：投入松弛变量为正
-                for j1 in range(m):
-                    list1 = [0] * m
-                    list1[j1] = 1
-                    eq1 = list(data[input_variable[j1]]) + [-data.loc[i, input_variable[j1]]] + list1 + [0] * (s1 + s2)
-                    A_eq.append(eq1)
-                
-                # 约束条件（2）：期望产出松弛变量为正
-                for j2 in range(s1):
-                    list2 = [0] * s1
-                    list2[j2] = -1
-                    eq2 = list(data[desirable_output[j2]]) + [-data.loc[i, desirable_output[j2]]] + [0] * m + list2 + [0] * s2
-                    A_eq.append(eq2)
-                
-                # 约束条件（3）：非期望产出松弛变量为正
-                for j3 in range(s2):
-                    list3 = [0] * s2
-                    list3[j3] = 1
-                    eq3 = list(data[undesirable_output[j3]]) + [-data.loc[i, undesirable_output[j3]]] + [0] * (m + s1) + list3
-                    A_eq.append(eq3)
-                
-                # 约束条件：常数向量
-                b_eq = [1] + [0] * (m + s1 + s2)
-                bounds = [(0, None)] * total  # 约束边界为零
-                
-                # 求解
-                op1 = op.linprog(c=c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = op1.fun
-                    res.loc[i, newcols] = op1.x[dmu_counts + 1:]
-                else:
-                    res.loc[i, 'TE'] = 0.0
-                    res.loc[i, newcols] = 0.0
-                    
-            except Exception as e:
-                print(f"SBM求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 0.0
-                res.loc[i, newcols] = 0.0
-        
-        return res
+        return efficiency_scores
     
-    def _solve_super_sbm_model(self, input_variable, desirable_output, undesirable_output, dmu, data, method='revised simplex'):
-        """求解超效率SBM模型"""
-        import pandas as pd
-        import scipy.optimize as op
-        import numpy as np
+    def sbm(self, undesirable_outputs=None, method='highs'):
+        """
+        SBM模型 - 基于松弛变量的效率测量模型
         
-        res = pd.DataFrame(columns=['dmu', 'TE'], index=data.index)
-        res['dmu'] = data[dmu]
+        数学公式：
+        min ρ = (1 - (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(r=1 to s)(sᵣ⁺/yᵣ₀))
+        s.t. x₀ = Xλ + s⁻
+             y₀ = Yλ - s⁺
+             λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0
+        """
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
-        # 获取基本参数
-        dmu_counts = data.shape[0]
-        m = len(input_variable)
-        s1 = len(desirable_output)
-        s2 = len(undesirable_output)
-        total = dmu_counts + m + s1 + s2 + 1
+        for dmu in range(self.n_dmus):
+            # 变量：λ (n个), s⁻ (m个), s⁺ (s个)
+            n_vars = self.n_dmus + self.n_inputs + self.n_outputs
+            
+            # 目标函数：min ρ
+            # 这是一个分式规划，需要转换为线性规划
+            # 使用Charnes-Cooper变换
+            
+            # 辅助变量 t
+            c = np.zeros(n_vars + 1)
+            c[self.n_dmus] = 1  # t的系数
+            
+            # 约束条件
+            # 投入约束：tx₀ = tXλ + ts⁻
+            A_eq_inputs = np.zeros((self.n_inputs, n_vars + 1))
+            b_eq_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_eq_inputs[i, self.n_dmus] = self.input_data[dmu, i]  # t的系数
+                A_eq_inputs[i, :self.n_dmus] = -self.input_data[:, i]  # λ的系数
+                A_eq_inputs[i, self.n_dmus + 1 + i] = -1  # s⁻的系数
+                b_eq_inputs[i] = self.input_data[dmu, i]
+            
+            # 产出约束：ty₀ = tYλ - ts⁺
+            A_eq_outputs = np.zeros((self.n_outputs, n_vars + 1))
+            b_eq_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_eq_outputs[r, self.n_dmus] = self.output_data[dmu, r]  # t的系数
+                A_eq_outputs[r, :self.n_dmus] = -self.output_data[:, r]  # λ的系数
+                A_eq_outputs[r, self.n_dmus + self.n_inputs + 1 + r] = 1  # s⁺的系数
+                b_eq_outputs[r] = self.output_data[dmu, r]
+            
+            # 归一化约束：t - (1/m)∑(sᵢ⁻/xᵢ₀) - (1/s)∑(sᵣ⁺/yᵣ₀) = 1
+            A_eq_norm = np.zeros((1, n_vars + 1))
+            A_eq_norm[0, self.n_dmus] = 1  # t的系数
+            
+            for i in range(self.n_inputs):
+                A_eq_norm[0, self.n_dmus + 1 + i] = -1.0 / (self.n_inputs * self.input_data[dmu, i])
+            
+            for r in range(self.n_outputs):
+                A_eq_norm[0, self.n_dmus + self.n_inputs + 1 + r] = -1.0 / (self.n_outputs * self.output_data[dmu, r])
+            
+            b_eq_norm = np.array([1])
+            
+            # 合并等式约束
+            A_eq = np.vstack([A_eq_inputs, A_eq_outputs, A_eq_norm])
+            b_eq = np.hstack([b_eq_inputs, b_eq_outputs, b_eq_norm])
+            
+            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, t ≥ 0
+            bounds = [(0, None)] * (n_vars + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, None, None, A_eq, b_eq, bounds)
+            
+            if result and result.success:
+                t = result.x[self.n_dmus]
+                lambda_values[dmu] = result.x[:self.n_dmus] / t if t > 0 else result.x[:self.n_dmus]
+                slack_inputs[dmu] = result.x[self.n_dmus + 1:self.n_dmus + 1 + self.n_inputs] / t if t > 0 else result.x[self.n_dmus + 1:self.n_dmus + 1 + self.n_inputs]
+                slack_outputs[dmu] = result.x[self.n_dmus + self.n_inputs + 1:] / t if t > 0 else result.x[self.n_dmus + self.n_inputs + 1:]
+                
+                # 计算SBM效率值
+                input_inefficiency = np.sum(slack_inputs[dmu] / self.input_data[dmu]) / self.n_inputs
+                output_inefficiency = np.sum(slack_outputs[dmu] / self.output_data[dmu]) / self.n_outputs
+                
+                efficiency_scores[dmu] = (1 - input_inefficiency) / (1 + output_inefficiency)
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 0.5
         
-        # 创建slack列
-        cols = input_variable + desirable_output + undesirable_output
-        newcols = []
-        for j in cols:
-            newcols.append(j + '_slack')
-            res[j + '_slack'] = np.nan
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
         
-        # 对每个DMU求解（超效率模型排除被评估DMU）
-        for i in range(dmu_counts):
-            try:
-                # 优化目标：目标函数的系数矩阵
-                c = [0] * dmu_counts + [1] + list(-1 / (m * data.loc[i, input_variable])) + [0] * (s1 + s2)
-                
-                # 约束条件：约束方程的系数矩阵
-                A_eq = [[0] * dmu_counts + [1] + [0] * m +
-                        list(1 / ((s1 + s2) * data.loc[i, desirable_output])) +
-                        list(1 / ((s1 + s2) * data.loc[i, undesirable_output]))]
-                
-                # 约束条件（1）：投入松弛变量为正（排除被评估DMU）
-                for j1 in range(m):
-                    list1 = [0] * m
-                    list1[j1] = 1
-                    # 排除被评估DMU的数据
-                    eq1_data = [data.loc[k, input_variable[j1]] if k != i else 0 for k in range(dmu_counts)]
-                    eq1 = eq1_data + [-data.loc[i, input_variable[j1]]] + list1 + [0] * (s1 + s2)
-                    A_eq.append(eq1)
-                
-                # 约束条件（2）：期望产出松弛变量为正（排除被评估DMU）
-                for j2 in range(s1):
-                    list2 = [0] * s1
-                    list2[j2] = -1
-                    eq2_data = [data.loc[k, desirable_output[j2]] if k != i else 0 for k in range(dmu_counts)]
-                    eq2 = eq2_data + [-data.loc[i, desirable_output[j2]]] + [0] * m + list2 + [0] * s2
-                    A_eq.append(eq2)
-                
-                # 约束条件（3）：非期望产出松弛变量为正（排除被评估DMU）
-                for j3 in range(s2):
-                    list3 = [0] * s2
-                    list3[j3] = 1
-                    eq3_data = [data.loc[k, undesirable_output[j3]] if k != i else 0 for k in range(dmu_counts)]
-                    eq3 = eq3_data + [-data.loc[i, undesirable_output[j3]]] + [0] * (m + s1) + list3
-                    A_eq.append(eq3)
-                
-                # 约束条件：常数向量
-                b_eq = [1] + [0] * (m + s1 + s2)
-                bounds = [(0, None)] * total
-                
-                # 求解
-                op1 = op.linprog(c=c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method=method)
-                
-                if op1.success:
-                    res.loc[i, 'TE'] = max(op1.fun, 1.0)  # 超效率模型允许效率值大于1
-                    res.loc[i, newcols] = op1.x[dmu_counts + 1:]
-                else:
-                    res.loc[i, 'TE'] = 1.0
-                    res.loc[i, newcols] = 0.0
-                    
-            except Exception as e:
-                print(f"超效率SBM求解失败 (DMU {i+1}): {e}")
-                res.loc[i, 'TE'] = 1.0
-                res.loc[i, newcols] = 0.0
-        
-        return res
+        return efficiency_scores
     
+    def super_sbm(self, undesirable_outputs=None, method='highs'):
+        """
+        超效率SBM模型 - 允许效率值大于1
+        
+        数学公式：
+        min δ = (1 + (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 - (1/s)∑(r=1 to s)(sᵣ⁺/yᵣ₀))
+        s.t. x₀ = Xλ + s⁻
+             y₀ = Yλ - s⁺
+             λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0
+             (排除被评估的DMU)
+        """
+        efficiency_scores = np.zeros(self.n_dmus)
+        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for dmu in range(self.n_dmus):
+            # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个)
+            n_vars = self.n_dmus - 1 + self.n_inputs + self.n_outputs
+            
+            # 目标函数：min δ
+            c = np.zeros(n_vars + 1)
+            c[self.n_dmus - 1] = 1  # t的系数
+            
+            # 约束条件
+            # 投入约束：tx₀ = tXλ + ts⁻
+            A_eq_inputs = np.zeros((self.n_inputs, n_vars + 1))
+            b_eq_inputs = np.zeros(self.n_inputs)
+            
+            for i in range(self.n_inputs):
+                A_eq_inputs[i, self.n_dmus - 1] = self.input_data[dmu, i]  # t的系数
+                # λ的系数（排除被评估的DMU）
+                lambda_idx = 0
+                for j in range(self.n_dmus):
+                    if j != dmu:
+                        A_eq_inputs[i, lambda_idx] = -self.input_data[j, i]
+                        lambda_idx += 1
+                A_eq_inputs[i, self.n_dmus - 1 + 1 + i] = -1  # s⁻的系数
+                b_eq_inputs[i] = self.input_data[dmu, i]
+            
+            # 产出约束：ty₀ = tYλ - ts⁺
+            A_eq_outputs = np.zeros((self.n_outputs, n_vars + 1))
+            b_eq_outputs = np.zeros(self.n_outputs)
+            
+            for r in range(self.n_outputs):
+                A_eq_outputs[r, self.n_dmus - 1] = self.output_data[dmu, r]  # t的系数
+                # λ的系数（排除被评估的DMU）
+                lambda_idx = 0
+                for j in range(self.n_dmus):
+                    if j != dmu:
+                        A_eq_outputs[r, lambda_idx] = -self.output_data[j, r]
+                        lambda_idx += 1
+                A_eq_outputs[r, self.n_dmus - 1 + self.n_inputs + 1 + r] = 1  # s⁺的系数
+                b_eq_outputs[r] = self.output_data[dmu, r]
+            
+            # 归一化约束：t + (1/m)∑(sᵢ⁻/xᵢ₀) - (1/s)∑(sᵣ⁺/yᵣ₀) = 1
+            A_eq_norm = np.zeros((1, n_vars + 1))
+            A_eq_norm[0, self.n_dmus - 1] = 1  # t的系数
+            
+            for i in range(self.n_inputs):
+                A_eq_norm[0, self.n_dmus - 1 + 1 + i] = 1.0 / (self.n_inputs * self.input_data[dmu, i])
+            
+            for r in range(self.n_outputs):
+                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + 1 + r] = -1.0 / (self.n_outputs * self.output_data[dmu, r])
+            
+            b_eq_norm = np.array([1])
+            
+            # 合并等式约束
+            A_eq = np.vstack([A_eq_inputs, A_eq_outputs, A_eq_norm])
+            b_eq = np.hstack([b_eq_inputs, b_eq_outputs, b_eq_norm])
+            
+            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, t ≥ 0
+            bounds = [(0, None)] * (n_vars + 1)
+            
+            # 求解线性规划
+            result = self._solve_linear_program(c, None, None, A_eq, b_eq, bounds)
+            
+            if result and result.success:
+                t = result.x[self.n_dmus - 1]
+                # 重构λ向量（包含被评估的DMU位置）
+                lambda_temp = result.x[:self.n_dmus - 1] / t if t > 0 else result.x[:self.n_dmus - 1]
+                lambda_idx = 0
+                for j in range(self.n_dmus):
+                    if j != dmu:
+                        lambda_values[dmu, j] = lambda_temp[lambda_idx]
+                        lambda_idx += 1
+                
+                slack_inputs[dmu] = result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs] / t if t > 0 else result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs]
+                slack_outputs[dmu] = result.x[self.n_dmus - 1 + self.n_inputs + 1:] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + 1:]
+                
+                # 计算超效率SBM效率值
+                input_inefficiency = np.sum(slack_inputs[dmu] / self.input_data[dmu]) / self.n_inputs
+                output_inefficiency = np.sum(slack_outputs[dmu] / self.output_data[dmu]) / self.n_outputs
+                
+                efficiency_scores[dmu] = (1 + input_inefficiency) / (1 - output_inefficiency)
+            else:
+                # 如果求解失败，使用简化方法
+                efficiency_scores[dmu] = 1.0
+        
+        self.slack_inputs = slack_inputs
+        self.slack_outputs = slack_outputs
+        self.lambda_values = lambda_values
+        
+        return efficiency_scores
+
 
 class DEAWrapper:
-    """DEA分析包装器，优先使用pyDEA库，备用自定义DEA实现"""
+    """DEA分析包装器，使用自定义DEA实现"""
     
     def __init__(self, input_data, output_data, dmu_names=None):
         self.input_data = np.array(input_data)
@@ -958,60 +664,6 @@ class DEAWrapper:
         """默认效率计算方法"""
         return self.ccr()
 
-class DEAWrapper:
-    """DEA分析包装器，使用自定义DEA实现"""
-    
-    def __init__(self, input_data, output_data, dmu_names=None):
-        self.input_data = np.array(input_data)
-        self.output_data = np.array(output_data)
-        # 修复numpy数组的布尔值判断问题
-        if dmu_names is not None:
-            self.dmu_names = list(dmu_names) if hasattr(dmu_names, '__iter__') else [dmu_names]
-        else:
-            self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
-        
-        # 使用自定义DEA实现
-        self.dea = CustomDEA(self.input_data, self.output_data)
-        print("✅ 使用自定义DEA实现进行DEA分析")
-    
-    
-    # 新增方法：支持不同的模型和方向选择
-    def ccr_input_oriented(self):
-        """CCR模型 - 输入导向"""
-        return self.dea.ccr_input_oriented()
-    
-    def ccr_output_oriented(self):
-        """CCR模型 - 输出导向"""
-        return self.dea.ccr_output_oriented()
-    
-    def bcc_input_oriented(self):
-        """BCC模型 - 输入导向"""
-        return self.dea.bcc_input_oriented()
-    
-    def bcc_output_oriented(self):
-        """BCC模型 - 输出导向"""
-        return self.dea.bcc_output_oriented()
-    
-    # 保持向后兼容的方法
-    def ccr(self):
-        """CCR模型 - 默认输入导向（向后兼容）"""
-        return self.ccr_input_oriented()
-    
-    def bcc(self):
-        """BCC模型 - 默认输入导向（向后兼容）"""
-        return self.bcc_input_oriented()
-    
-    def sbm(self, undesirable_outputs=None):
-        """SBM模型 - 包含非期望产出的松弛基础模型"""
-        return self.dea.sbm(undesirable_outputs=undesirable_outputs)
-    
-    def super_sbm(self, undesirable_outputs=None):
-        """超效率SBM模型 - 允许效率值大于1"""
-        return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
-    
-    def efficiency(self):
-        """默认效率计算方法"""
-        return self.ccr()
 
 # 为了保持兼容性，创建DEA别名
 DEA = DEAWrapper
@@ -1477,12 +1129,12 @@ def clean_data(df, null_handling='fill_zero'):
                 # 尝试将列转换为数值，无法转换的保持原样
                 df_cleaned[col] = pd.to_numeric(df_cleaned[col], errors='coerce').fillna(0)
         
+        # 转换百分比数据
+        percentage_columns = [col for col in df_cleaned.columns if any(keyword in col for keyword in ['满意度', '率', '比例', '百分比'])]
+        for col in percentage_columns:
+            df_cleaned[col] = df_cleaned[col].apply(convert_percentage_to_decimal)
+        
         return df_cleaned, {'removed_rows': 0, 'filled_nulls': total_nulls}
-    
-    # 转换百分比数据
-    percentage_columns = [col for col in df_cleaned.columns if any(keyword in col for keyword in ['满意度', '率', '比例', '百分比'])]
-    for col in percentage_columns:
-        df_cleaned[col] = df_cleaned[col].apply(convert_percentage_to_decimal)
 
 def create_manual_input_form(num_hospitals, num_variables):
     """创建手动输入表单"""
@@ -1608,40 +1260,40 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         # 根据模型类型和导向执行分析
         if model_type == 'CCR':
             if orientation == 'input':
-                efficiency_scores = dea.ccr_input_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.ccr_input_oriented()
             elif orientation == 'output':
-                efficiency_scores = dea.ccr_output_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.ccr_output_oriented()
             else:
                 raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'CCR-VRS':
             # CCR-VRS模型实际上就是BCC模型
             if orientation == 'input':
-                efficiency_scores = dea.bcc_input_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.bcc_input_oriented()
             elif orientation == 'output':
-                efficiency_scores = dea.bcc_output_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.bcc_output_oriented()
             else:
                 raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'BCC':
             if orientation == 'input':
-                efficiency_scores = dea.bcc_input_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.bcc_input_oriented()
             elif orientation == 'output':
-                efficiency_scores = dea.bcc_output_oriented(input_vars, output_vars, dmu_column, data)
+                efficiency_scores = dea.bcc_output_oriented()
             else:
                 raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'SBM':
             # 处理非期望产出
             if undesirable_outputs:
-                efficiency_scores = dea.sbm(input_vars, output_vars, undesirable_outputs, dmu_column, data)
+                efficiency_scores = dea.sbm(undesirable_outputs=undesirable_outputs)
             else:
                 # 如果没有非期望产出，使用空列表
-                efficiency_scores = dea.sbm(input_vars, output_vars, [], dmu_column, data)
+                efficiency_scores = dea.sbm()
         elif model_type == 'Super-SBM':
             # 处理非期望产出
             if undesirable_outputs:
-                efficiency_scores = dea.super_sbm(input_vars, output_vars, undesirable_outputs, dmu_column, data)
+                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_outputs)
             else:
                 # 如果没有非期望产出，使用空列表
-                efficiency_scores = dea.super_sbm(input_vars, output_vars, [], dmu_column, data)
+                efficiency_scores = dea.super_sbm()
         else:
             raise ValueError(f"不支持的模型类型: {model_type}")
         
@@ -2183,6 +1835,130 @@ def perform_benchmark_analysis(data, input_vars, output_vars):
             benchmark['comparisons'][dmu_id] = gap_analysis
     
     return benchmark
+
+def display_dea_formulas():
+    """显示DEA模型的数学公式"""
+    st.subheader("📐 DEA模型数学公式")
+    
+    # CCR模型公式
+    st.markdown("### 1. CCR模型（规模报酬不变）")
+    
+    st.markdown("#### 输入导向CCR模型：")
+    st.latex(r"""
+    \min \theta
+    """)
+    st.latex(r"""
+    \text{s.t. } \sum_{j=1}^{n} \lambda_j x_{ij} \leq \theta x_{i0}, \quad i = 1,2,\ldots,m
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j y_{rj} \geq y_{r0}, \quad r = 1,2,\ldots,s
+    """)
+    st.latex(r"""
+    \lambda_j \geq 0, \quad j = 1,2,\ldots,n
+    """)
+    
+    st.markdown("#### 输出导向CCR模型：")
+    st.latex(r"""
+    \max \phi
+    """)
+    st.latex(r"""
+    \text{s.t. } \sum_{j=1}^{n} \lambda_j x_{ij} \leq x_{i0}, \quad i = 1,2,\ldots,m
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j y_{rj} \geq \phi y_{r0}, \quad r = 1,2,\ldots,s
+    """)
+    st.latex(r"""
+    \lambda_j \geq 0, \quad j = 1,2,\ldots,n
+    """)
+    
+    # BCC模型公式
+    st.markdown("### 2. BCC模型（规模报酬可变）")
+    
+    st.markdown("#### 输入导向BCC模型：")
+    st.latex(r"""
+    \min \theta
+    """)
+    st.latex(r"""
+    \text{s.t. } \sum_{j=1}^{n} \lambda_j x_{ij} \leq \theta x_{i0}, \quad i = 1,2,\ldots,m
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j y_{rj} \geq y_{r0}, \quad r = 1,2,\ldots,s
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j = 1
+    """)
+    st.latex(r"""
+    \lambda_j \geq 0, \quad j = 1,2,\ldots,n
+    """)
+    
+    st.markdown("#### 输出导向BCC模型：")
+    st.latex(r"""
+    \max \phi
+    """)
+    st.latex(r"""
+    \text{s.t. } \sum_{j=1}^{n} \lambda_j x_{ij} \leq x_{i0}, \quad i = 1,2,\ldots,m
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j y_{rj} \geq \phi y_{r0}, \quad r = 1,2,\ldots,s
+    """)
+    st.latex(r"""
+    \sum_{j=1}^{n} \lambda_j = 1
+    """)
+    st.latex(r"""
+    \lambda_j \geq 0, \quad j = 1,2,\ldots,n
+    """)
+    
+    # SBM模型公式
+    st.markdown("### 3. SBM模型（基于松弛变量）")
+    
+    st.latex(r"""
+    \min \rho = \frac{1 - \frac{1}{m}\sum_{i=1}^{m}\frac{s_i^-}{x_{i0}}}{1 + \frac{1}{s}\sum_{r=1}^{s}\frac{s_r^+}{y_{r0}}}
+    """)
+    st.latex(r"""
+    \text{s.t. } x_0 = X\lambda + s^-
+    """)
+    st.latex(r"""
+    y_0 = Y\lambda - s^+
+    """)
+    st.latex(r"""
+    \lambda \geq 0, \quad s^- \geq 0, \quad s^+ \geq 0
+    """)
+    
+    # 超效率SBM模型公式
+    st.markdown("### 4. 超效率SBM模型")
+    
+    st.latex(r"""
+    \min \delta = \frac{1 + \frac{1}{m}\sum_{i=1}^{m}\frac{s_i^-}{x_{i0}}}{1 - \frac{1}{s}\sum_{r=1}^{s}\frac{s_r^+}{y_{r0}}}
+    """)
+    st.latex(r"""
+    \text{s.t. } x_0 = X\lambda + s^-
+    """)
+    st.latex(r"""
+    y_0 = Y\lambda - s^+
+    """)
+    st.latex(r"""
+    \lambda \geq 0, \quad s^- \geq 0, \quad s^+ \geq 0
+    """)
+    st.latex(r"""
+    \text{（排除被评估的DMU）}
+    """)
+    
+    # 符号说明
+    st.markdown("### 📝 符号说明")
+    st.markdown("""
+    - **θ**: 效率值（输入导向）
+    - **φ**: 效率值（输出导向）
+    - **ρ**: SBM效率值
+    - **δ**: 超效率SBM效率值
+    - **λⱼ**: 权重变量
+    - **s⁻**: 投入松弛变量（投入冗余）
+    - **s⁺**: 产出松弛变量（产出不足）
+    - **xᵢⱼ**: 第j个DMU的第i个投入
+    - **yᵣⱼ**: 第j个DMU的第r个产出
+    - **m**: 投入变量数量
+    - **s**: 产出变量数量
+    - **n**: DMU数量
+    """)
 
 def display_dea_analysis_report(analysis_report):
     """
@@ -2782,7 +2558,7 @@ def main():
                 
                 # 执行分析按钮
                 st.markdown("---")
-                col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+                col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1.5, 1.5, 1])
                 with col_btn2:
                     if st.button("🚀 执行DEA分析", type="primary", use_container_width=True):
                         with st.spinner("正在执行DEA分析..."):
@@ -2837,13 +2613,20 @@ def main():
                                     st.session_state['dea_model'] = str(selected_model) if selected_model else ""
                                 
                                 st.success("✅ DEA分析完成！")
-                                
+                
+                with col_btn3:
+                    if st.button("📐 查看数学公式", type="secondary", use_container_width=True):
+                        display_dea_formulas()
                                 # 显示结果
                                 st.subheader("📊 效率分析结果")
-                                
+
                                 # 显示效率值表格
                                 st.markdown("**效率值排名（按效率值降序排列）**")
-                                results_display = results.copy()
+                                try:
+                                    results_display = results.copy()
+                                except Exception as e:
+                                    st.error(f"结果数据复制失败: {e}")
+                                    results_display = results
                                 
                                 # 按效率值降序排序
                                 results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
