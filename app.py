@@ -921,7 +921,7 @@ def create_coverage_chart(fsqca_results):
     """
     try:
         # 过滤有效路径
-        valid_paths = fsqca_results[fsqca_results['路径类型'] != '无效路径'].copy()
+        valid_paths = fsqca_results[fsqca_results['Path Type'] != '无效路径'].copy()
         
         if len(valid_paths) == 0:
             return None
@@ -929,11 +929,11 @@ def create_coverage_chart(fsqca_results):
         # 创建柱状图
         fig = px.bar(
             valid_paths,
-            x='路径组合',
-            y='覆盖度',
-            color='路径类型',
+            x='Solution Path',
+            y='Raw Coverage',
+            color='Path Type',
             title='🔍 路径覆盖度比较',
-            labels={'覆盖度': '覆盖度', '路径组合': '路径组合'},
+            labels={'Raw Coverage': '覆盖度', 'Solution Path': '路径组合'},
             color_discrete_map={
                 '核心路径': '#2E8B57',
                 '边缘路径': '#FFA500'
@@ -1553,7 +1553,7 @@ def main():
                                 st.subheader("🔍 组态路径分析结果")
                                 
                                 # 过滤有效路径
-                                valid_paths = fsqca_results[fsqca_results['路径类型'] != '无效路径']
+                                valid_paths = fsqca_results[fsqca_results['Path Type'] != '无效路径']
                                 
                                 if len(valid_paths) > 0:
                                     # 应用核心路径高亮样式
@@ -1580,9 +1580,9 @@ def main():
                                     
                                     # 创建带样式的DataFrame
                                     def highlight_path_type(row):
-                                        if row['路径类型'] == '核心路径':
+                                        if row['Path Type'] == '核心路径':
                                             return ['core-path-row'] * len(row)
-                                        elif row['路径类型'] == '边缘路径':
+                                        elif row['Path Type'] == '边缘路径':
                                             return ['edge-path-row'] * len(row)
                                         else:
                                             return [''] * len(row)
@@ -1599,7 +1599,7 @@ def main():
                                     with col2:
                                         st.metric("有效路径数", len(valid_paths))
                                     with col3:
-                                        core_paths = len(valid_paths[valid_paths['路径类型'] == '核心路径'])
+                                        core_paths = len(valid_paths[valid_paths['Path Type'] == '核心路径'])
                                         st.metric("核心路径数", core_paths)
                                     
                                     # 创建覆盖度图表
@@ -1625,10 +1625,10 @@ def main():
                                     
                                     if len(valid_paths) > 0:
                                         best_path = valid_paths.iloc[0]
-                                        st.markdown(f"🏆 **最优路径**: {best_path['路径组合']}")
-                                        st.markdown(f"   - 一致性: {best_path['一致性']:.4f}")
-                                        st.markdown(f"   - 覆盖度: {best_path['覆盖度']:.4f}")
-                                        st.markdown(f"   - 路径类型: {best_path['路径类型']}")
+                                        st.markdown(f"🏆 **最优路径**: {best_path['Solution Path']}")
+                                        st.markdown(f"   - 一致性: {best_path['Raw Consistency']:.4f}")
+                                        st.markdown(f"   - 覆盖度: {best_path['Raw Coverage']:.4f}")
+                                        st.markdown(f"   - 路径类型: {best_path['Path Type']}")
                                     
                                     # 路径解释
                                     st.markdown("**路径解释**")
