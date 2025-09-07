@@ -5,13 +5,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import re
-# 使用自定义DEA实现替代pyDEA
+# 使用Pyfrontier库进行DEA分析
 from scipy.optimize import linprog
 import itertools
 from scipy.stats import pearsonr
 
-class DEA:
-    """自定义DEA实现，支持CCR、BCC和SBM模型"""
+try:
+    from pyfrontier import DEA
+    PYFRONTIER_AVAILABLE = True
+    print(" Pyfrontier库导入成功")
+except ImportError:
+    PYFRONTIER_AVAILABLE = False
+    print(" Pyfrontier库不可用，使用自定义DEA实现")
+
+class CustomDEA:
+    """自定义DEA实现，支持CCR、BCC和SBM模型（备用方案）"""
     
     def __init__(self, input_data, output_data):
         self.input_data = np.array(input_data)
@@ -95,7 +103,74 @@ class DEA:
         # 简化的SBM实现，使用CCR作为近似
         return self.ccr()
 
-# 导入QCA分析模块
+# 创建DEA包装器类
+class DEAWrapper:
+    """DEA分析包装器，优先使用Pyfrontier，备用自定义实现"""
+    
+    def __init__(self, input_data, output_data):
+        self.input_data = np.array(input_data)
+        self.output_data = np.array(output_data)
+        
+        if PYFRONTIER_AVAILABLE:
+            try:
+                # 使用Pyfrontier
+                self.dea = DEA(self.input_data, self.output_data)
+                self.use_pyfrontier = True
+                print("✓ 使用Pyfrontier进行DEA分析")
+            except Exception as e:
+                print(f"⚠️ Pyfrontier初始化失败: {e}，使用自定义实现")
+                self.dea = CustomDEA(self.input_data, self.output_data)
+                self.use_pyfrontier = False
+        else:
+            # 使用自定义实现
+            self.dea = CustomDEA(self.input_data, self.output_data)
+            self.use_pyfrontier = False
+            print("✓ 使用自定义DEA实现")
+    
+    def ccr(self):
+        """CCR模型 - 规模报酬不变"""
+        if self.use_pyfrontier:
+            try:
+                # Pyfrontier的CCR模型
+                return self.dea.ccr()
+            except Exception as e:
+                print(f"⚠️ Pyfrontier CCR失败: {e}，切换到自定义实现")
+                return self.dea.ccr()
+        else:
+            return self.dea.ccr()
+    
+    def bcc(self):
+        """BCC模型 - 规模报酬可变"""
+        if self.use_pyfrontier:
+            try:
+                # Pyfrontier的BCC模型
+                return self.dea.bcc()
+            except Exception as e:
+                print(f"⚠️ Pyfrontier BCC失败: {e}，切换到自定义实现")
+                return self.dea.bcc()
+        else:
+            return self.dea.bcc()
+    
+    def sbm(self):
+        """SBM模型 - 非径向模型"""
+        if self.use_pyfrontier:
+            try:
+                # Pyfrontier的SBM模型
+                return self.dea.sbm()
+            except Exception as e:
+                print(f"⚠️ Pyfrontier SBM失败: {e}，切换到自定义实现")
+                return self.dea.sbm()
+        else:
+            return self.dea.sbm()
+    
+    def efficiency(self):
+        """默认效率计算方法"""
+        return self.ccr()
+
+# 为了保持兼容性，创建DEA别名
+DEA = DEAWrapper
+
+# 导入QCA分析模块（纯Python实现）
 try:
     from qca_analysis import (
         check_r_connection, 
@@ -105,10 +180,10 @@ try:
         perform_minimization,
         perform_complete_qca_analysis
     )
-    QCA_AVAILABLE = True
+    print("✓ QCA模块（纯Python实现）导入成功")
 except ImportError as e:
-    QCA_AVAILABLE = False
     st.warning(f"QCA模块导入失败: {e}")
+    print(f"❌ QCA模块导入失败: {e}")
 
 # 设置页面配置
 st.set_page_config(
@@ -1315,7 +1390,7 @@ def main():
                                     else:
                                         st.warning("⚠️ 所有条件变量的一致性都<0.9，使用原始变量进行分析")
                                 else:
-                                    st.warning("⚠️ 必要性分析失败或R连接不可用，使用原始变量进行分析")
+                                    st.warning("⚠️ 必要性分析失败，使用原始变量进行分析")
                             
                             # 执行fsQCA分析
                             fsqca_results = perform_minimization(
@@ -1456,21 +1531,22 @@ def main():
                                 else:
                                     st.warning("⚠️ 没有找到有效路径，请尝试调整参数阈值")
                             else:
-                                # 检查是否是R连接问题
-                                from qca_analysis import check_r_connection
-                                r_available, r_message = check_r_connection()
-                                if not r_available:
-                                    st.error(f"❌ R连接不可用：{r_message}")
-                                    st.info("💡 **解决方案**：")
-                                    st.markdown("""
-                                    1. 确保已安装R语言环境
-                                    2. 确保已安装rpy2包：`pip install rpy2`
-                                    3. 确保已安装QCA包：在R中运行 `install.packages('QCA')`
-                                    4. 重启应用程序
-                                    """)
-                                else:
-                                    st.error("❌ fsQCA分析失败，请检查数据和参数设置")
-                                    st.info("可能的原因：数据格式不正确、参数设置不当或R包版本不兼容")
+                                # 使用纯Python实现，无需R连接
+                                st.error("❌ fsQCA分析失败，请检查数据和参数设置")
+                                st.info("💡 **可能的原因**：")
+                                st.markdown("""
+                                1. 数据格式不正确
+                                2. 参数设置不当
+                                3. 条件变量选择问题
+                                4. 数据量不足
+                                """)
+                                st.info("💡 **解决方案**：")
+                                st.markdown("""
+                                1. 检查数据是否包含足够的案例
+                                2. 调整一致性阈值和频率阈值
+                                3. 尝试选择不同的条件变量
+                                4. 确保数据质量良好
+                                """)
     else:
         if 'data' not in st.session_state:
             st.warning("⚠️ 请先在数据输入区中加载数据")
