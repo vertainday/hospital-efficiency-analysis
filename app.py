@@ -250,7 +250,7 @@ QCA_AVAILABLE = True
 
 try:
     # 导入纯Python QCA实现
-    from qca_analysis_python import (
+    from qca_analysis import (
         check_r_connection, 
         perform_necessity_analysis, 
         perform_sufficiency_analysis,
