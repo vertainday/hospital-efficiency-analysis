@@ -11,6 +11,24 @@ from scipy.optimize import linprog
 import tempfile
 import os
 
+# 检查pyDEA库是否可用
+try:
+    import pyDEA
+    PYDEA_AVAILABLE = True
+    print("✅ pyDEA库可用")
+except ImportError:
+    PYDEA_AVAILABLE = False
+    print("⚠️ pyDEA库不可用，使用自定义DEA实现")
+
+# 检查QCA模块是否可用
+try:
+    from qca_analysis import perform_necessity_analysis, perform_minimization
+    QCA_AVAILABLE = True
+    print("✅ QCA分析模块可用")
+except ImportError:
+    QCA_AVAILABLE = False
+    print("⚠️ QCA分析模块不可用")
+
 # 使用自定义DEA实现
 print("✅ 使用自定义DEA实现进行DEA分析")
 
@@ -119,42 +137,9 @@ class CustomDEA:
     
     def _run_pydea_python_api(self, model_type, orientation):
         """使用pyDEA的Python API运行分析"""
-        # 创建数据字典
-        data_dict = self._create_pydea_data_dict()
-        
-        # 创建pyDEA数据对象
-        input_data = create_data(data_dict)
-        
-        # 设置参数
-        params = Parameters()
-        params.INPUT_CATEGORIES = [f'Input_{i+1}' for i in range(self.n_inputs)]
-        params.OUTPUT_CATEGORIES = [f'Output_{i+1}' for i in range(self.n_outputs)]
-        params.ORIENTATION = orientation.upper()
-        params.RETURNS_TO_SCALE = 'VRS' if model_type == 'BCC' else 'CRS'
-        
-        # 创建并运行DEA模型
-        model = EnvelopmentModel(params)
-        model.input_data = input_data
-        model.run()
-        
-        # 获取效率得分
-        if hasattr(model, 'solution') and model.solution:
-            efficiency_scores = []
-            for dmu_name in self.dmu_names:
-                if hasattr(model.solution, 'efficiency_scores') and dmu_name in model.solution.efficiency_scores:
-                    efficiency_scores.append(model.solution.efficiency_scores[dmu_name])
-                else:
-                    efficiency_scores.append(1.0)  # 默认值
-            
-            efficiency_scores = np.array(efficiency_scores)
-        else:
-            # 如果无法获取结果，返回默认值
-            efficiency_scores = np.ones(self.n_dmus)
-        
-        # 确保效率值在合理范围内
-        efficiency_scores = np.clip(efficiency_scores, 0.0, 1.0)
-        
-        return efficiency_scores
+        # 由于pyDEA库可能不可用，这里返回默认值
+        print("⚠️ pyDEA Python API不可用，返回默认效率值")
+        return np.ones(self.n_dmus)
     
     def _run_pydea_cli(self, model_type, orientation):
         """使用pyDEA的命令行接口运行分析"""
@@ -1175,18 +1160,9 @@ class DEAWrapper:
         else:
             self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
         
-        # 优先使用pyDEA库，如果不可用则使用自定义DEA实现
-        if PYDEA_AVAILABLE:
-            try:
-                self.dea = PyDEAWrapper(self.input_data, self.output_data, dmu_names=self.dmu_names)
-                print("✅ 使用pyDEA库进行DEA分析")
-            except Exception as e:
-                print(f"⚠️ pyDEA库初始化失败: {e}")
-                print("🔄 切换到自定义DEA实现")
-                self.dea = CustomDEA(self.input_data, self.output_data)
-        else:
-            self.dea = CustomDEA(self.input_data, self.output_data)
-            print("✅ 使用自定义DEA实现进行DEA分析")
+        # 使用自定义DEA实现
+        self.dea = CustomDEA(self.input_data, self.output_data)
+        print("✅ 使用自定义DEA实现进行DEA分析")
     
     # 新增方法：支持不同的模型和方向选择
     def ccr_input_oriented(self):
@@ -1284,36 +1260,7 @@ class DEAWrapper:
 # 为了保持兼容性，创建DEA别名
 DEA = DEAWrapper
 
-# 导入QCA分析模块
-QCA_AVAILABLE = True
-
-try:
-    # 导入纯Python QCA实现
-    from qca_analysis import (
-        check_r_connection, 
-        perform_necessity_analysis, 
-        perform_sufficiency_analysis,
-        perform_truth_table_analysis,
-        perform_minimization,
-        perform_complete_qca_analysis
-    )
-    print("✓ 成功加载纯Python QCA实现")
-except Exception as e:
-    print(f"❌ 纯Python QCA实现加载失败: {e}")
-    QCA_AVAILABLE = False
-    # 创建占位符函数
-    def check_r_connection():
-        return False, "纯Python QCA实现不可用"
-    def perform_necessity_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_sufficiency_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_truth_table_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_minimization(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_complete_qca_analysis(*args, **kwargs):
-        return pd.DataFrame()
+# QCA分析模块已在文件开头导入
 
 # 设置页面配置
 st.set_page_config(
