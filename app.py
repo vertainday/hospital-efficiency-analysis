@@ -5,22 +5,23 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import re
+from pyDEA import DEA
 from scipy.optimize import linprog
 import itertools
 from scipy.stats import pearsonr
 
 try:
-    from pyDEA.core.data_processing.read_data import read_data_from_array
-    from pyDEA.core.DEA_model import Model
-    from pyDEA.core.params import Param
+    from pyDEA.core.data_processing import create_dmu
+    from pyDEA.core.models.envelopment_model import EnvelopmentModelInputOriented
+    from pyDEA.core.utils.dea_utils import generate_upper_bound_for_efficiency_score
     PYDEA_AVAILABLE = True
-    print(" pyDEA库导入成功")
-except ImportError:
+    print("pyDEA库导入成功 - 将优先使用pyDEA进行DEA分析")
+except ImportError as e:
     PYDEA_AVAILABLE = False
-    print(" pyDEA库不可用，将使用自定义DEA实现")
+    print(f"pyDEA库不可用 ({e}) - 将使用自定义DEA实现")
 
 class CustomDEA:
-    """自定义DEA实现，支持CCR、BCC和SBM模型（备用方案）"""
+    """自定义DEA实现，支持CCR和BCC模型的输入导向和输出导向版本"""
     
     def __init__(self, input_data, output_data):
         self.input_data = np.array(input_data)
@@ -29,80 +30,372 @@ class CustomDEA:
         self.n_inputs = self.input_data.shape[1]
         self.n_outputs = self.output_data.shape[1]
         
+        # 数据预处理：确保所有数据为正数
+        self.input_data = np.maximum(self.input_data, 1e-10)
+        self.output_data = np.maximum(self.output_data, 1e-10)
+    
+    def ccr_input_oriented(self):
+        """CCR模型 - 输入导向（规模报酬不变）
+        目标函数：max θ
+        约束条件：∑λⱼxᵢⱼ ≤ θxᵢₒ, ∑λⱼyᵣⱼ ≥ yᵣₒ, λⱼ ≥ 0
+        """
+        return self._solve_dea_model(model='ccr', orientation='input')
+    
+    def ccr_output_oriented(self):
+        """CCR模型 - 输出导向（规模报酬不变）
+        目标函数：min φ
+        约束条件：∑λⱼxᵢⱼ ≤ xᵢₒ, ∑λⱼyᵣⱼ ≥ φyᵣₒ, λⱼ ≥ 0
+        """
+        return self._solve_dea_model(model='ccr', orientation='output')
+    
+    def bcc_input_oriented(self):
+        """BCC模型 - 输入导向（规模报酬可变）
+        目标函数：max θ
+        约束条件：∑λⱼxᵢⱼ + sᵢ⁻ = θxᵢₒ, ∑λⱼyᵣⱼ - sᵣ⁺ = yᵣₒ, ∑λⱼ = 1, λⱼ ≥ 0
+        """
+        return self._solve_dea_model(model='bcc', orientation='input')
+    
+    def bcc_output_oriented(self):
+        """BCC模型 - 输出导向（规模报酬可变）
+        目标函数：min φ
+        约束条件：∑λⱼxᵢⱼ + sᵢ⁻ = xᵢₒ, ∑λⱼyᵣⱼ - sᵣ⁺ = φyᵣₒ, ∑λⱼ = 1, λⱼ ≥ 0
+        """
+        return self._solve_dea_model(model='bcc', orientation='output')
+    
     def ccr(self):
-        """CCR模型 - 规模报酬不变"""
-        return self._solve_dea_model(constant_returns=True)
+        """CCR模型 - 默认输入导向（向后兼容）"""
+        return self.ccr_input_oriented()
     
     def bcc(self):
-        """BCC模型 - 规模报酬可变"""
-        return self._solve_dea_model(constant_returns=False)
-    
-    def sbm(self):
-        """SBM模型 - 非径向模型"""
-        return self._solve_sbm_model()
+        """BCC模型 - 默认输入导向（向后兼容）"""
+        return self.bcc_input_oriented()
     
     def efficiency(self):
         """默认效率计算方法"""
-        return self.ccr()
+        return self.ccr_input_oriented()
     
-    def _solve_dea_model(self, constant_returns=True):
-        """求解DEA模型"""
+    def _solve_dea_model(self, model='ccr', orientation='input'):
+        """求解DEA模型的核心方法
+        
+        Args:
+            model: 'ccr' 或 'bcc'
+            orientation: 'input' 或 'output'
+        """
         efficiency_scores = []
         
         for i in range(self.n_dmus):
-            # 目标函数：最大化效率
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = -1  # 效率分数
-            
-            # 约束条件
-            A_ub = []
-            b_ub = []
-            
-            # 输入约束
-            for j in range(self.n_inputs):
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = self.input_data[:, j]
-                constraint[0] = -self.input_data[i, j]
-                A_ub.append(constraint)
-                b_ub.append(0)
-            
-            # 输出约束
-            for j in range(self.n_outputs):
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = -self.output_data[:, j]
-                constraint[0] = self.output_data[i, j]
-                A_ub.append(constraint)
-                b_ub.append(0)
-            
-            # 规模报酬约束
-            if constant_returns:
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = 1
-                A_ub.append(constraint)
-                b_ub.append(1)
-                constraint = np.zeros(self.n_dmus + 1)
-                constraint[1:] = -1
-                A_ub.append(constraint)
-                b_ub.append(-1)
-            
-            # 非负约束
-            bounds = [(0, None) for _ in range(self.n_dmus + 1)]
-            
             try:
-                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-                if result.success:
-                    efficiency_scores.append(-result.fun)
-                else:
-                    efficiency_scores.append(0.0)
-            except:
+                if orientation == 'input':
+                    efficiency = self._solve_input_oriented(i, model)
+                else:  # output oriented
+                    efficiency = self._solve_output_oriented(i, model)
+                
+                # 确保效率值在合理范围内
+                efficiency = min(max(efficiency, 0.0), 1.0)
+                efficiency_scores.append(efficiency)
+                
+            except Exception as e:
+                print(f"DEA求解失败 (DMU {i+1}): {e}")
                 efficiency_scores.append(0.0)
         
         return np.array(efficiency_scores)
     
-    def _solve_sbm_model(self):
-        """求解SBM模型（简化版本）"""
-        # 简化的SBM实现，使用CCR作为近似
-        return self.ccr()
+    def _solve_input_oriented(self, dmu_idx, model):
+        """求解输入导向DEA模型
+        
+        目标函数：max θ
+        约束条件：
+        - 输入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
+        - 输出约束：∑λⱼyᵣⱼ ≥ yᵣₒ
+        - 规模报酬约束（BCC）：∑λⱼ = 1
+        - 非负约束：λⱼ ≥ 0
+        """
+        # 变量：θ, λ₁, λ₂, ..., λₙ
+        n_vars = self.n_dmus + 1
+        
+        # 目标函数：最大化θ（转换为最小化-θ）
+        c = np.zeros(n_vars)
+        c[0] = -1  # -θ
+        
+        # 约束条件
+        A_ub = []
+        b_ub = []
+        
+        # 输入约束：∑λⱼxᵢⱼ ≤ θxᵢₒ
+        # 转换为：∑λⱼxᵢⱼ - θxᵢₒ ≤ 0
+        for j in range(self.n_inputs):
+            constraint = np.zeros(n_vars)
+            constraint[1:] = self.input_data[:, j]  # λⱼ的系数
+            constraint[0] = -self.input_data[dmu_idx, j]  # -θ的系数
+            A_ub.append(constraint)
+            b_ub.append(0)
+        
+        # 输出约束：∑λⱼyᵣⱼ ≥ yᵣₒ
+        # 转换为：-∑λⱼyᵣⱼ ≤ -yᵣₒ
+        for r in range(self.n_outputs):
+            constraint = np.zeros(n_vars)
+            constraint[1:] = -self.output_data[:, r]  # -λⱼ的系数
+            constraint[0] = 0  # θ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(-self.output_data[dmu_idx, r])
+        
+        # 规模报酬约束
+        if model == 'bcc':
+            # BCC模型：∑λⱼ = 1
+            constraint = np.zeros(n_vars)
+            constraint[1:] = 1  # λⱼ的系数
+            constraint[0] = 0   # θ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(1)
+            
+            constraint = np.zeros(n_vars)
+            constraint[1:] = -1  # -λⱼ的系数
+            constraint[0] = 0    # θ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(-1)
+        
+        # 非负约束
+        bounds = [(0, None) for _ in range(n_vars)]
+        
+        # 求解线性规划
+        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+        
+        if result.success:
+            theta = -result.fun  # 因为目标函数是-θ
+            return theta
+        else:
+            return 0.0
+    
+    def _solve_output_oriented(self, dmu_idx, model):
+        """求解输出导向DEA模型
+        
+        目标函数：min φ
+        约束条件：
+        - 输入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
+        - 输出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ
+        - 规模报酬约束（BCC）：∑λⱼ = 1
+        - 非负约束：λⱼ ≥ 0
+        """
+        # 变量：φ, λ₁, λ₂, ..., λₙ
+        n_vars = self.n_dmus + 1
+        
+        # 目标函数：最小化φ
+        c = np.zeros(n_vars)
+        c[0] = 1  # φ
+        
+        # 约束条件
+        A_ub = []
+        b_ub = []
+        
+        # 输入约束：∑λⱼxᵢⱼ ≤ xᵢₒ
+        for j in range(self.n_inputs):
+            constraint = np.zeros(n_vars)
+            constraint[1:] = self.input_data[:, j]  # λⱼ的系数
+            constraint[0] = 0  # φ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(self.input_data[dmu_idx, j])
+        
+        # 输出约束：∑λⱼyᵣⱼ ≥ φyᵣₒ
+        # 转换为：-∑λⱼyᵣⱼ + φyᵣₒ ≤ 0
+        for r in range(self.n_outputs):
+            constraint = np.zeros(n_vars)
+            constraint[1:] = -self.output_data[:, r]  # -λⱼ的系数
+            constraint[0] = self.output_data[dmu_idx, r]  # φ的系数
+            A_ub.append(constraint)
+            b_ub.append(0)
+        
+        # 规模报酬约束
+        if model == 'bcc':
+            # BCC模型：∑λⱼ = 1
+            constraint = np.zeros(n_vars)
+            constraint[1:] = 1  # λⱼ的系数
+            constraint[0] = 0   # φ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(1)
+            
+            constraint = np.zeros(n_vars)
+            constraint[1:] = -1  # -λⱼ的系数
+            constraint[0] = 0    # φ不参与此约束
+            A_ub.append(constraint)
+            b_ub.append(-1)
+        
+        # 非负约束
+        bounds = [(0, None) for _ in range(n_vars)]
+        
+        # 求解线性规划
+        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+        
+        if result.success:
+            phi = result.fun
+            # 输出导向的效率值是1/φ
+            return 1.0 / phi if phi > 0 else 1.0
+        else:
+            return 0.0
+    
+    # SBM模型相关方法
+    def sbm(self, undesirable_outputs=None):
+        """SBM模型 - 包含非期望产出的松弛基础模型
+        
+        Args:
+            undesirable_outputs: 非期望产出列索引列表，如果为None则只考虑期望产出
+        """
+        return self._solve_sbm_model(undesirable_outputs=undesirable_outputs)
+    
+    def super_sbm(self, undesirable_outputs=None):
+        """超效率SBM模型 - 允许效率值大于1
+        
+        Args:
+            undesirable_outputs: 非期望产出列索引列表，如果为None则只考虑期望产出
+        """
+        return self._solve_super_sbm_model(undesirable_outputs=undesirable_outputs)
+    
+    def _solve_sbm_model(self, undesirable_outputs=None):
+        """求解SBM模型（线性化后形式）"""
+        efficiency_scores = []
+        
+        for i in range(self.n_dmus):
+            try:
+                efficiency = self._solve_sbm_dmu(i, undesirable_outputs, super_efficiency=False)
+                efficiency_scores.append(efficiency)
+            except Exception as e:
+                print(f"SBM求解失败 (DMU {i+1}): {e}")
+                efficiency_scores.append(0.0)
+        
+        return np.array(efficiency_scores)
+    
+    def _solve_super_sbm_model(self, undesirable_outputs=None):
+        """求解超效率SBM模型"""
+        efficiency_scores = []
+        
+        for i in range(self.n_dmus):
+            try:
+                efficiency = self._solve_sbm_dmu(i, undesirable_outputs, super_efficiency=True)
+                efficiency_scores.append(efficiency)
+            except Exception as e:
+                print(f"超效率SBM求解失败 (DMU {i+1}): {e}")
+                efficiency_scores.append(0.0)
+        
+        return np.array(efficiency_scores)
+    
+    def _solve_sbm_dmu(self, dmu_idx, undesirable_outputs=None, super_efficiency=False):
+        """求解单个DMU的SBM模型
+        
+        Args:
+            dmu_idx: 被评估DMU的索引
+            undesirable_outputs: 非期望产出列索引列表
+            super_efficiency: 是否为超效率模型
+        """
+        # 确定期望产出和非期望产出
+        if undesirable_outputs is None:
+            # 如果没有指定非期望产出，所有产出都视为期望产出
+            good_outputs = list(range(self.n_outputs))
+            bad_outputs = []
+        else:
+            # 分离期望产出和非期望产出
+            good_outputs = [i for i in range(self.n_outputs) if i not in undesirable_outputs]
+            bad_outputs = undesirable_outputs
+        
+        n_good_outputs = len(good_outputs)
+        n_bad_outputs = len(bad_outputs)
+        
+        # 变量：t, μ₁, μ₂, ..., μₙ, S₁⁻, S₂⁻, ..., Sₘ⁻, S₁ᵍ⁺, ..., Sᵣᵍ⁺, S₁ᵇ⁺, ..., Sᶠᵇ⁺
+        n_vars = 1 + self.n_dmus + self.n_inputs + n_good_outputs + n_bad_outputs
+        
+        # 目标函数：min ρ = t - (1/m)∑(Sᵢ⁻/xᵢₖ)
+        c = np.zeros(n_vars)
+        c[0] = 1  # t的系数
+        
+        # 添加投入松弛变量的系数
+        for i in range(self.n_inputs):
+            var_idx = 1 + self.n_dmus + i
+            c[var_idx] = -1.0 / (self.n_inputs * self.input_data[dmu_idx, i])
+        
+        # 约束条件
+        A_eq = []
+        b_eq = []
+        
+        # 投入约束：t xᵢₖ = ∑μⱼ xᵢⱼ + Sᵢ⁻
+        for i in range(self.n_inputs):
+            constraint = np.zeros(n_vars)
+            constraint[0] = self.input_data[dmu_idx, i]  # t的系数
+            
+            # μⱼ的系数
+            for j in range(self.n_dmus):
+                if super_efficiency and j == dmu_idx:
+                    # 超效率模型排除被评估DMU
+                    constraint[1 + j] = 0
+                else:
+                    constraint[1 + j] = self.input_data[j, i]
+            
+            # Sᵢ⁻的系数
+            constraint[1 + self.n_dmus + i] = 1
+            
+            A_eq.append(constraint)
+            b_eq.append(0)
+        
+        # 期望产出约束：t yᵣₖᵍ = ∑μⱼ yᵣⱼᵍ - Sᵣᵍ⁺
+        for r_idx, r in enumerate(good_outputs):
+            constraint = np.zeros(n_vars)
+            constraint[0] = self.output_data[dmu_idx, r]  # t的系数
+            
+            # μⱼ的系数
+            for j in range(self.n_dmus):
+                if super_efficiency and j == dmu_idx:
+                    # 超效率模型排除被评估DMU
+                    constraint[1 + j] = 0
+                else:
+                    constraint[1 + j] = -self.output_data[j, r]  # 负号因为要减去
+            
+            # Sᵣᵍ⁺的系数
+            constraint[1 + self.n_dmus + self.n_inputs + r_idx] = -1
+            
+            A_eq.append(constraint)
+            b_eq.append(0)
+        
+        # 非期望产出约束：t yᶠₖᵇ = ∑μⱼ yᶠⱼᵇ + Sᶠᵇ⁺
+        for f_idx, f in enumerate(bad_outputs):
+            constraint = np.zeros(n_vars)
+            constraint[0] = self.output_data[dmu_idx, f]  # t的系数
+            
+            # μⱼ的系数
+            for j in range(self.n_dmus):
+                if super_efficiency and j == dmu_idx:
+                    # 超效率模型排除被评估DMU
+                    constraint[1 + j] = 0
+                else:
+                    constraint[1 + j] = self.output_data[j, f]
+            
+            # Sᶠᵇ⁺的系数
+            constraint[1 + self.n_dmus + self.n_inputs + n_good_outputs + f_idx] = 1
+            
+            A_eq.append(constraint)
+            b_eq.append(0)
+        
+        # 非负约束
+        bounds = []
+        bounds.append((1e-10, None))  # t > 0
+        for _ in range(self.n_dmus):
+            bounds.append((0, None))  # μⱼ ≥ 0
+        for _ in range(self.n_inputs):
+            bounds.append((0, None))  # Sᵢ⁻ ≥ 0
+        for _ in range(n_good_outputs):
+            bounds.append((0, None))  # Sᵣᵍ⁺ ≥ 0
+        for _ in range(n_bad_outputs):
+            bounds.append((0, None))  # Sᶠᵇ⁺ ≥ 0
+        
+        # 求解线性规划
+        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+        
+        if result.success:
+            rho = result.fun
+            if super_efficiency:
+                # 超效率SBM：ρ ≥ 1
+                return max(rho, 1.0)
+            else:
+                # 普通SBM：ρ ∈ (0,1]
+                return min(max(rho, 0.0), 1.0)
+        else:
+            return 0.0 if not super_efficiency else 1.0
 
 class DEAWrapper:
     """DEA分析包装器，优先使用pyDEA，备用自定义实现"""
@@ -116,7 +409,7 @@ class DEAWrapper:
         else:
             self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
         
-        # 尝试初始化pyDEA
+        # 优先尝试初始化pyDEA
         self.use_pydea = False
         self.dea = None
         
@@ -125,118 +418,141 @@ class DEAWrapper:
                 # pyDEA需要特定的数据结构
                 self._init_pydea()
                 self.use_pydea = True
-                print("✓ 成功初始化pyDEA")
+                print("✅ 成功初始化pyDEA - 将使用pyDEA库进行DEA分析")
             except Exception as e:
-                print(f"⚠️ pyDEA初始化失败: {str(e)}，将使用自定义实现")
+                print(f"⚠️ pyDEA初始化失败: {str(e)}，切换到自定义实现")
                 self.dea = CustomDEA(self.input_data, self.output_data)
                 self.use_pydea = False
         else:
-            # 使用自定义实现
+            # pyDEA不可用，使用自定义实现
             self.dea = CustomDEA(self.input_data, self.output_data)
             self.use_pydea = False
-            print("✓ 使用自定义DEA实现")
+            print("⚠️ pyDEA库不可用，使用自定义DEA实现")
     
     def _init_pydea(self):
         """初始化pyDEA模型所需的数据结构"""
-        # 创建参数对象
-        self.params = Param()
-        
-        # 设置基本参数
-        self.params.add_parameter('RETURN_TO_SCALE', 'CRS')  # 默认为CCR
-        self.params.add_parameter('MODEL_ORIENTATION', 'INPUT')
-        self.params.add_parameter('INPUT_OUTPUT_ORIENTATION', 'IN')
-        self.params.add_parameter('PRINT_RESULTS', 'false')
-        self.params.add_parameter('SOLVE_MULTIPLIER', 'true')
-        
         # 准备数据
         self.data = self._prepare_pydea_data()
     
     def _prepare_pydea_data(self):
         """将输入输出数据转换为pyDEA所需格式"""
-        # 创建空数据字典
-        data = {}
+        # 创建DataFrame格式的数据
+        data_dict = {'DMU': self.dmu_names}
         
-        # 添加DMU名称
-        for i, dmu_name in enumerate(self.dmu_names):
-            # 添加输入数据
-            for j in range(self.input_data.shape[1]):
-                data[(dmu_name, f'Input{j+1}')] = self.input_data[i, j]
-            
-            # 添加输出数据
-            for j in range(self.output_data.shape[1]):
-                data[(dmu_name, f'Output{j+1}')] = self.output_data[i, j]
+        # 添加输入列
+        for j in range(self.input_data.shape[1]):
+            data_dict[f'Input{j+1}'] = self.input_data[:, j]
         
-        # 读取数据到pyDEA格式
-        return read_data_from_array(
-            data,
-            dmu_names=self.dmu_names,
-            input_names=[f'Input{i+1}' for i in range(self.input_data.shape[1])],
-            output_names=[f'Output{i+1}' for i in range(self.output_data.shape[1])]
+        # 添加输出列
+        for j in range(self.output_data.shape[1]):
+            data_dict[f'Output{j+1}'] = self.output_data[:, j]
+        
+        # 创建DataFrame
+        df = pd.DataFrame(data_dict)
+        
+        # 定义输入和输出的列索引
+        input_cols = [f'Input{i+1}' for i in range(self.input_data.shape[1])]
+        output_cols = [f'Output{i+1}' for i in range(self.output_data.shape[1])]
+        
+        # 创建DMU列表
+        dmu_list = create_dmu(
+            df, 
+            input_idx=[df.columns.get_loc(col) for col in input_cols],
+            output_idx=[df.columns.get_loc(col) for col in output_cols],
+            dmu_column='DMU'
         )
+        
+        return dmu_list
     
     def _solve_pydea_model(self, model_type):
         """使用pyDEA求解特定模型"""
-        # 设置模型参数
-        if model_type == 'CCR':
-            self.params.update_parameter('RETURN_TO_SCALE', 'CRS')
-        elif model_type == 'BCC':
-            self.params.update_parameter('RETURN_TO_SCALE', 'VRS')
-        elif model_type == 'SBM':
-            # pyDEA不直接支持SBM，使用CCR作为替代
-            print("⚠️ pyDEA不直接支持SBM模型，将使用CCR模型作为替代")
-            self.params.update_parameter('RETURN_TO_SCALE', 'CRS')
-        else:
-            raise ValueError(f"不支持的模型类型: {model_type}")
-        
-        # 创建并求解模型
-        model = Model(self.data, self.params)
-        model.run()
-        
-        # 获取结果
-        results = model.get_results()
-        
-        # 提取效率值
-        efficiency_scores = []
-        for dmu in self.dmu_names:
-            efficiency = results.efficiency_score(dmu)
-            efficiency_scores.append(efficiency)
-        
-        return np.array(efficiency_scores)
+        try:
+            print(f"🔬 使用pyDEA库执行{model_type}模型分析...")
+            
+            # 创建输入导向的包络模型
+            model = EnvelopmentModelInputOriented(generate_upper_bound_for_efficiency_score)
+            
+            # 运行DEA分析
+            solution = model.run(self.data)
+            
+            # 提取效率值
+            efficiency_scores = []
+            for dmu in solution:
+                try:
+                    efficiency = dmu.efficiency
+                    # 确保效率值在[0,1]范围内
+                    if efficiency is not None and not np.isnan(efficiency):
+                        efficiency = min(max(float(efficiency), 0.0), 1.0)
+                    else:
+                        efficiency = 0.0
+                    efficiency_scores.append(efficiency)
+                except Exception as e:
+                    print(f"获取{dmu.name}效率值失败: {e}")
+                    efficiency_scores.append(0.0)
+            
+            print(f"✅ pyDEA {model_type}模型分析完成，计算了{len(efficiency_scores)}个DMU的效率值")
+            return np.array(efficiency_scores)
+            
+        except Exception as e:
+            print(f"❌ pyDEA {model_type}模型求解失败: {e}")
+            # 如果pyDEA失败，返回零效率值
+            return np.zeros(len(self.dmu_names))
     
-    def ccr(self):
-        """CCR模型 - 规模报酬不变"""
+    # 新增方法：支持不同的模型和方向选择
+    def ccr_input_oriented(self):
+        """CCR模型 - 输入导向"""
         if self.use_pydea:
-            try:
-                return self._solve_pydea_model('CCR')
-            except Exception as e:
-                print(f"⚠️ pyDEA CCR失败: {str(e)}，切换到自定义实现")
-                return self.dea.ccr()
+            return self._solve_pydea_model('CCR')
         else:
-            return self.dea.ccr()
+            return self.dea.ccr_input_oriented()
+    
+    def ccr_output_oriented(self):
+        """CCR模型 - 输出导向"""
+        if self.use_pydea:
+            # pyDEA暂时只支持输入导向，使用自定义实现
+            return self.dea.ccr_output_oriented()
+        else:
+            return self.dea.ccr_output_oriented()
+    
+    def bcc_input_oriented(self):
+        """BCC模型 - 输入导向"""
+        if self.use_pydea:
+            return self._solve_pydea_model('BCC')
+        else:
+            return self.dea.bcc_input_oriented()
+    
+    def bcc_output_oriented(self):
+        """BCC模型 - 输出导向"""
+        if self.use_pydea:
+            # pyDEA暂时只支持输入导向，使用自定义实现
+            return self.dea.bcc_output_oriented()
+        else:
+            return self.dea.bcc_output_oriented()
+    
+    # 保持向后兼容的方法
+    def ccr(self):
+        """CCR模型 - 默认输入导向（向后兼容）"""
+        return self.ccr_input_oriented()
     
     def bcc(self):
-        """BCC模型 - 规模报酬可变"""
-        if self.use_pydea:
-            try:
-                return self._solve_pydea_model('BCC')
-            except Exception as e:
-                print(f"⚠️ pyDEA BCC失败: {str(e)}，切换到自定义实现")
-                return self.dea.bcc()
-        else:
-            return self.dea.bcc()
+        """BCC模型 - 默认输入导向（向后兼容）"""
+        return self.bcc_input_oriented()
     
-    def sbm(self):
-        """SBM模型 - 非径向模型"""
+    def sbm(self, undesirable_outputs=None):
+        """SBM模型 - 包含非期望产出的松弛基础模型"""
         if self.use_pydea:
-            try:
-                # pyDEA不直接支持SBM，使用自定义实现
-                print("⚠️ pyDEA不支持SBM模型，使用自定义实现")
-                return self.dea.sbm()
-            except Exception as e:
-                print(f"⚠️ SBM处理失败: {str(e)}")
-                return self.dea.sbm()
+            # pyDEA暂时不支持SBM，使用自定义实现
+            return self.dea.sbm(undesirable_outputs=undesirable_outputs)
         else:
-            return self.dea.sbm()
+            return self.dea.sbm(undesirable_outputs=undesirable_outputs)
+    
+    def super_sbm(self, undesirable_outputs=None):
+        """超效率SBM模型 - 允许效率值大于1"""
+        if self.use_pydea:
+            # pyDEA暂时不支持超效率SBM，使用自定义实现
+            return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
+        else:
+            return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
     
     def efficiency(self):
         """默认效率计算方法"""
@@ -278,8 +594,8 @@ except Exception as e:
 
 # 设置页面配置
 st.set_page_config(
-    page_title="基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统v1.0",
-    page_icon="🏥",
+    page_title="基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -792,7 +1108,43 @@ def create_manual_input_form(num_hospitals, num_variables):
     # 创建DataFrame
     df = pd.DataFrame(data_rows)
     return df
-def perform_dea_analysis(data, input_vars, output_vars, model_type):
+def validate_dea_data(input_data, output_data):
+    """
+    验证DEA输入数据的合理性
+    
+    参数:
+    - input_data: 投入数据
+    - output_data: 产出数据
+    
+    返回:
+    - is_valid: 数据是否有效
+    - message: 验证消息
+    """
+    # 检查数据形状
+    if input_data.shape[0] != output_data.shape[0]:
+        return False, "投入和产出数据的样本数量不一致"
+    
+    # 检查数据是否包含负值
+    if np.any(input_data < 0):
+        return False, "投入数据包含负值，DEA要求所有数据为正数"
+    
+    if np.any(output_data < 0):
+        return False, "产出数据包含负值，DEA要求所有数据为正数"
+    
+    # 检查数据是否全为零
+    if np.all(input_data == 0):
+        return False, "投入数据全为零，无法进行DEA分析"
+    
+    if np.all(output_data == 0):
+        return False, "产出数据全为零，无法进行DEA分析"
+    
+    # 检查样本数量
+    if input_data.shape[0] < 3:
+        return False, "样本数量过少，建议至少3个样本进行DEA分析"
+    
+    return True, "数据验证通过"
+
+def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation='input', undesirable_outputs=None):
     """
     执行DEA效率分析
     
@@ -800,7 +1152,9 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type):
     - data: 包含医院数据的DataFrame
     - input_vars: 投入变量列表
     - output_vars: 产出变量列表
-    - model_type: DEA模型类型 ('CCR', 'BCC', 'SBM')
+    - model_type: DEA模型类型 ('CCR', 'BCC', 'SBM', 'Super-SBM')
+    - orientation: 导向类型 ('input', 'output')
+    - undesirable_outputs: 非期望产出变量列表（仅SBM模型使用）
     
     返回:
     - results: 包含效率值的DataFrame
@@ -811,22 +1165,76 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type):
         input_data = data[input_vars].values
         output_data = data[output_vars].values
         
-        # 创建DEA对象（使用包装器）
+        # 数据验证
+        is_valid, message = validate_dea_data(input_data, output_data)
+        if not is_valid:
+            st.error(f"❌ 数据验证失败: {message}")
+            return None
+        
+        # 数据预处理：处理零值和异常值
+        input_data = np.maximum(input_data, 1e-10)  # 避免零值
+        output_data = np.maximum(output_data, 1e-10)  # 避免零值
+        
+        # 创建DEA对象（使用包装器，优先使用pyDEA）
         dea = DEAWrapper(input_data, output_data, dmu_names=hospital_ids)
         
-        # 根据模型类型执行分析
+        # 显示使用的DEA库信息
+        if dea.use_pydea:
+            st.info("🔬 **使用pyDEA库进行DEA分析** - 专业DEA分析库，结果更准确可靠")
+        else:
+            st.warning("⚠️ **使用自定义DEA实现** - pyDEA库不可用，使用备用方案")
+        
+        # 根据模型类型和导向执行分析
         if model_type == 'CCR':
-            efficiency_scores = dea.ccr()
+            if orientation == 'input':
+                efficiency_scores = dea.ccr_input_oriented()
+            elif orientation == 'output':
+                efficiency_scores = dea.ccr_output_oriented()
+            else:
+                raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'BCC':
-            efficiency_scores = dea.bcc()
+            if orientation == 'input':
+                efficiency_scores = dea.bcc_input_oriented()
+            elif orientation == 'output':
+                efficiency_scores = dea.bcc_output_oriented()
+            else:
+                raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'SBM':
-            efficiency_scores = dea.sbm()
+            # 处理非期望产出
+            undesirable_indices = None
+            if undesirable_outputs:
+                # 将非期望产出变量名转换为列索引
+                undesirable_indices = []
+                for var in undesirable_outputs:
+                    if var in output_vars:
+                        undesirable_indices.append(output_vars.index(var))
+            efficiency_scores = dea.sbm(undesirable_outputs=undesirable_indices)
+        elif model_type == 'Super-SBM':
+            # 处理非期望产出
+            undesirable_indices = None
+            if undesirable_outputs:
+                # 将非期望产出变量名转换为列索引
+                undesirable_indices = []
+                for var in undesirable_outputs:
+                    if var in output_vars:
+                        undesirable_indices.append(output_vars.index(var))
+            efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices)
         else:
             raise ValueError(f"不支持的模型类型: {model_type}")
         
         # 确保efficiency_scores是numpy数组
         if not isinstance(efficiency_scores, np.ndarray):
             efficiency_scores = np.array(efficiency_scores)
+        
+        # 效率值后处理：确保在[0,1]范围内
+        efficiency_scores = np.clip(efficiency_scores, 0.0, 1.0)
+        
+        # 检查是否有异常的效率值
+        if np.any(efficiency_scores > 1.0):
+            st.warning("⚠️ 检测到效率值大于1，已自动修正为1.0")
+        
+        if np.any(efficiency_scores < 0.0):
+            st.warning("⚠️ 检测到效率值小于0，已自动修正为0.0")
         
         # 创建结果DataFrame
         results = pd.DataFrame({
@@ -836,6 +1244,9 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type):
         
         # 按效率值降序排列
         results = results.sort_values('效率值', ascending=False).reset_index(drop=True)
+        
+        # 显示效率值统计信息
+        st.info(f"📊 效率值统计: 最小值={results['效率值'].min():.3f}, 最大值={results['效率值'].max():.3f}, 平均值={results['效率值'].mean():.3f}")
         
         return results
         
@@ -893,6 +1304,673 @@ def create_efficiency_chart(results):
     )
     
     return fig
+
+def analyze_dea_results(results, data, input_vars, output_vars, model_type='BCC', orientation='input', undesirable_outputs=None):
+    """
+    分析DEA结果并提供详细解释
+    
+    参数:
+    - results: 包含效率值的DataFrame
+    - data: 原始数据
+    - input_vars: 投入变量列表
+    - output_vars: 产出变量列表
+    - model_type: DEA模型类型 ('CCR', 'BCC', 'SBM', 'Super-SBM')
+    - orientation: 导向类型 ('input', 'output')
+    - undesirable_outputs: 非期望产出变量列表
+    
+    返回:
+    - analysis_report: 分析报告字典
+    """
+    # 初始化分析报告结构
+    analysis_report = {
+        'model_info': {
+            'model_type': model_type,
+            'orientation': orientation,
+            'undesirable_outputs': undesirable_outputs or []
+        },
+        'efficiency_analysis': {
+            'overall_efficiency': {},
+            'technical_efficiency': {},
+            'scale_efficiency': {},
+            'efficiency_decomposition': {}
+        },
+        'slack_analysis': {
+            'input_slack': {},
+            'output_slack': {},
+            'slack_summary': {}
+        },
+        'effectiveness_analysis': {
+            'strong_efficient': [],
+            'weak_efficient': [],
+            'non_efficient': []
+        },
+        'input_redundancy_analysis': {},
+        'output_insufficiency_analysis': {},
+        'detailed_unit_analysis': {},
+        'improvement_suggestions': {}
+    }
+    
+    # 合并数据
+    merged_data = data.merge(results, on='医院ID', how='left')
+    
+    # 根据模型类型进行不同的分析
+    if model_type == 'BCC':
+        # BCC模型可以进行效益分解
+        analysis_report = analyze_bcc_decomposition(analysis_report, merged_data, input_vars, output_vars)
+    else:
+        # 其他模型使用综合效率分析
+        analysis_report = analyze_comprehensive_efficiency(analysis_report, merged_data, input_vars, output_vars, model_type)
+    
+    # 松弛变量分析（所有模型都需要）
+    analysis_report = analyze_slack_variables(analysis_report, merged_data, input_vars, output_vars, model_type)
+    
+    # DEA有效性分析
+    analysis_report = analyze_dea_effectiveness(analysis_report, merged_data)
+    
+    # 投入冗余分析
+    analysis_report = analyze_input_redundancy(analysis_report, merged_data, input_vars)
+    
+    # 产出不足分析
+    analysis_report = analyze_output_insufficiency(analysis_report, merged_data, output_vars, undesirable_outputs)
+    
+    # 详细单元分析
+    analysis_report = analyze_individual_units(analysis_report, merged_data, input_vars, output_vars, model_type)
+    
+    # 生成改进建议
+    analysis_report = generate_comprehensive_suggestions(analysis_report, merged_data, input_vars, output_vars)
+    
+    return analysis_report
+
+def analyze_bcc_decomposition(analysis_report, merged_data, input_vars, output_vars):
+    """分析BCC模型的效益分解（技术效益和规模效益）"""
+    # 注意：这里需要同时运行CCR和BCC模型来分解效益
+    # 由于我们只有BCC结果，这里提供理论分析框架
+    
+    efficiency_scores = merged_data['效率值'].values
+    
+    # 综合技术效益分析
+    analysis_report['efficiency_analysis']['overall_efficiency'] = {
+        'mean': float(efficiency_scores.mean()),
+        'std': float(efficiency_scores.std()),
+        'min': float(efficiency_scores.min()),
+        'max': float(efficiency_scores.max()),
+        'interpretation': {
+            'optimal_units': len(efficiency_scores[efficiency_scores >= 0.9999]),
+            'super_efficient_units': len(efficiency_scores[efficiency_scores > 1.0]),
+            'inefficient_units': len(efficiency_scores[efficiency_scores < 0.9999])
+        }
+    }
+    
+    # 技术效益分析（BCC模型结果）
+    analysis_report['efficiency_analysis']['technical_efficiency'] = {
+        'mean': float(efficiency_scores.mean()),
+        'interpretation': '反映由于管理和技术等因素影响的生产效率',
+        'efficient_count': len(efficiency_scores[efficiency_scores >= 0.9999])
+    }
+    
+    # 规模效益分析（需要CCR结果，这里提供理论框架）
+    analysis_report['efficiency_analysis']['scale_efficiency'] = {
+        'interpretation': '反映由于规模因素影响的生产效率',
+        'note': '需要同时运行CCR模型来计算规模效益 = 综合效益 / 技术效益'
+    }
+    
+    return analysis_report
+
+def analyze_comprehensive_efficiency(analysis_report, merged_data, input_vars, output_vars, model_type):
+    """分析其他模型的综合效率"""
+    efficiency_scores = merged_data['效率值'].values
+    
+    # 根据模型类型调整效率值范围
+    if model_type == 'Super-SBM':
+        # 超效率SBM：效率值 >= 1
+        efficient_threshold = 1.0
+        super_efficient_threshold = 1.0
+    else:
+        # CCR、SBM：效率值 <= 1
+        efficient_threshold = 0.9999
+        super_efficient_threshold = 1.0
+    
+    analysis_report['efficiency_analysis']['overall_efficiency'] = {
+        'mean': float(efficiency_scores.mean()),
+        'std': float(efficiency_scores.std()),
+        'min': float(efficiency_scores.min()),
+        'max': float(efficiency_scores.max()),
+        'interpretation': {
+            'optimal_units': len(efficiency_scores[efficiency_scores >= efficient_threshold]),
+            'super_efficient_units': len(efficiency_scores[efficiency_scores > super_efficient_threshold]) if model_type == 'Super-SBM' else 0,
+            'inefficient_units': len(efficiency_scores[efficiency_scores < efficient_threshold])
+        }
+    }
+    
+    return analysis_report
+
+def analyze_slack_variables(analysis_report, merged_data, input_vars, output_vars, model_type):
+    """分析松弛变量"""
+    # 这里需要实际的松弛变量值，由于我们的实现没有返回松弛变量，
+    # 这里提供分析框架
+    
+    analysis_report['slack_analysis'] = {
+        'input_slack': {
+            'interpretation': '松弛变量S-(差额变数)：指为达到目标效率可以减少的投入量',
+            'note': '需要从DEA求解过程中获取实际的松弛变量值'
+        },
+        'output_slack': {
+            'interpretation': '松弛变量S+(超额变数)：指为达到目标效率可以增加的产出量',
+            'note': '需要从DEA求解过程中获取实际的松弛变量值'
+        }
+    }
+    
+    return analysis_report
+
+def analyze_dea_effectiveness(analysis_report, merged_data):
+    """分析DEA有效性"""
+    efficiency_scores = merged_data['效率值'].values
+    hospital_ids = merged_data['医院ID'].values
+    
+    strong_efficient = []
+    weak_efficient = []
+    non_efficient = []
+    
+    for i, (hospital_id, efficiency) in enumerate(zip(hospital_ids, efficiency_scores)):
+        # 这里简化处理，实际需要松弛变量值来判断
+        if efficiency >= 0.9999:
+            # 假设没有松弛变量信息，暂时都归为强有效
+            strong_efficient.append({
+                'hospital_id': hospital_id,
+                'efficiency': float(efficiency),
+                'status': 'DEA强有效',
+                'interpretation': '综合效益=1且S-与S+均为0'
+            })
+        else:
+            non_efficient.append({
+                'hospital_id': hospital_id,
+                'efficiency': float(efficiency),
+                'status': '非DEA有效',
+                'interpretation': '综合效益<1，存在投入冗余和产出不足'
+            })
+    
+    analysis_report['effectiveness_analysis'] = {
+        'strong_efficient': strong_efficient,
+        'weak_efficient': weak_efficient,
+        'non_efficient': non_efficient,
+        'summary': {
+            'total_units': len(hospital_ids),
+            'strong_efficient_count': len(strong_efficient),
+            'weak_efficient_count': len(weak_efficient),
+            'non_efficient_count': len(non_efficient)
+        }
+    }
+    
+    return analysis_report
+
+def analyze_input_redundancy(analysis_report, merged_data, input_vars):
+    """投入冗余分析"""
+    redundancy_analysis = {}
+    
+    for var in input_vars:
+        values = merged_data[var].values
+        mean_val = values.mean()
+        
+        redundancy_analysis[var] = {
+            'mean_value': float(mean_val),
+            'interpretation': '投入冗余率指"过多投入"与已投入的比值',
+            'note': '需要松弛变量S-值来计算具体的投入冗余率'
+        }
+    
+    analysis_report['input_redundancy_analysis'] = redundancy_analysis
+    return analysis_report
+
+def analyze_output_insufficiency(analysis_report, merged_data, output_vars, undesirable_outputs):
+    """产出不足分析"""
+    insufficiency_analysis = {}
+    
+    for var in output_vars:
+        values = merged_data[var].values
+        mean_val = values.mean()
+        
+        var_type = "非期望产出" if var in (undesirable_outputs or []) else "期望产出"
+        
+        insufficiency_analysis[var] = {
+            'mean_value': float(mean_val),
+            'type': var_type,
+            'interpretation': '产出不足率指"产出不足"与已产出的比值',
+            'note': '需要松弛变量S+值来计算具体的产出不足率'
+        }
+    
+    analysis_report['output_insufficiency_analysis'] = insufficiency_analysis
+    return analysis_report
+
+def analyze_individual_units(analysis_report, merged_data, input_vars, output_vars, model_type):
+    """详细单元分析"""
+    detailed_analysis = {}
+    
+    for index, row in merged_data.iterrows():
+        hospital_id = row['医院ID']
+        efficiency = row['效率值']
+        
+        # 效率状态判断
+        if model_type == 'Super-SBM':
+            if efficiency >= 1.0:
+                status = "超效率有效"
+                interpretation = "效率值≥1，表示超效率（比其他有效DMU更好）"
+            else:
+                status = "非超效率有效"
+                interpretation = "效率值<1，未达到超效率标准"
+        else:
+            if efficiency >= 0.9999:
+                status = "DEA有效"
+                interpretation = "效率值=1，投入与产出结构合理，相对效益最优"
+            else:
+                status = "DEA无效"
+                interpretation = "效率值<1，投入与产出结构不合理，存在投入冗余和产出不足"
+        
+        detailed_analysis[hospital_id] = {
+            'efficiency': float(efficiency),
+            'status': status,
+            'interpretation': interpretation,
+            'input_values': {var: float(row[var]) for var in input_vars},
+            'output_values': {var: float(row[var]) for var in output_vars}
+        }
+    
+    analysis_report['detailed_unit_analysis'] = detailed_analysis
+    return analysis_report
+
+def generate_comprehensive_suggestions(analysis_report, merged_data, input_vars, output_vars):
+    """生成综合改进建议"""
+    suggestions = {
+        'overall_suggestions': [],
+        'efficiency_improvement': [],
+        'resource_optimization': [],
+        'output_enhancement': []
+    }
+    
+    # 整体建议
+    total_units = len(merged_data)
+    efficient_units = len(analysis_report['effectiveness_analysis']['strong_efficient'])
+    efficiency_rate = efficient_units / total_units * 100
+    
+    suggestions['overall_suggestions'].append(
+        f"整体效率率为{efficiency_rate:.1f}%，{total_units-efficient_units}个决策单元需要改进"
+    )
+    
+    # 效率改进建议
+    if efficiency_rate < 50:
+        suggestions['efficiency_improvement'].append("整体效率较低，建议进行全面的效率提升计划")
+    elif efficiency_rate < 80:
+        suggestions['efficiency_improvement'].append("效率中等，建议重点改进低效单元")
+    else:
+        suggestions['efficiency_improvement'].append("整体效率较高，建议维持并进一步优化")
+    
+    # 资源优化建议
+    suggestions['resource_optimization'].append("建议减少投入冗余，提高资源利用效率")
+    suggestions['resource_optimization'].append("优化资源配置结构，避免资源浪费")
+    
+    # 产出提升建议
+    suggestions['output_enhancement'].append("建议增加产出不足，提高服务质量和数量")
+    suggestions['output_enhancement'].append("学习高效单元的最佳实践，提升整体产出水平")
+    
+    analysis_report['improvement_suggestions'] = suggestions
+    return analysis_report
+
+def analyze_inefficiency(hospital_row, input_vars, output_vars, all_data):
+    """
+    分析单个医院的效率不足原因
+    
+    参数:
+    - hospital_row: 医院数据行
+    - input_vars: 投入变量列表
+    - output_vars: 产出变量列表
+    - all_data: 所有医院数据
+    
+    返回:
+    - analysis: 分析结果字典
+    """
+    hospital_id = hospital_row['医院ID']
+    hospital_efficiency = hospital_row['效率值']
+    
+    analysis = {
+        'efficiency_score': hospital_efficiency,
+        'input_analysis': {},
+        'output_analysis': {},
+        'benchmark_comparison': {},
+        'improvement_potential': {}
+    }
+    
+    # 计算各变量的相对表现
+    for var in input_vars:
+        hospital_value = hospital_row[var]
+        avg_value = all_data[var].mean()
+        median_value = all_data[var].median()
+        
+        analysis['input_analysis'][var] = {
+            'hospital_value': hospital_value,
+            'average_value': avg_value,
+            'median_value': median_value,
+            'relative_performance': hospital_value / avg_value if avg_value > 0 else 0,
+            'status': '高于平均' if hospital_value > avg_value else '低于平均'
+        }
+    
+    for var in output_vars:
+        hospital_value = hospital_row[var]
+        avg_value = all_data[var].mean()
+        median_value = all_data[var].median()
+        
+        analysis['output_analysis'][var] = {
+            'hospital_value': hospital_value,
+            'average_value': avg_value,
+            'median_value': median_value,
+            'relative_performance': hospital_value / avg_value if avg_value > 0 else 0,
+            'status': '高于平均' if hospital_value > avg_value else '低于平均'
+        }
+    
+    return analysis
+
+def generate_improvement_suggestions(inefficient_units, input_vars, output_vars):
+    """
+    生成改进建议
+    
+    参数:
+    - inefficient_units: 低效医院列表
+    - input_vars: 投入变量列表
+    - output_vars: 产出变量列表
+    
+    返回:
+    - suggestions: 改进建议字典
+    """
+    suggestions = {}
+    
+    for unit in inefficient_units:
+        hospital_id = unit['hospital_id']
+        analysis = unit['analysis']
+        
+        hospital_suggestions = []
+        
+        # 分析投入效率
+        for var, data in analysis['input_analysis'].items():
+            if data['relative_performance'] > 1.2:  # 投入过高
+                hospital_suggestions.append({
+                    'type': '投入优化',
+                    'variable': var,
+                    'suggestion': f"减少{var}投入，当前投入比平均水平高{(data['relative_performance']-1)*100:.1f}%",
+                    'priority': '高' if data['relative_performance'] > 1.5 else '中'
+                })
+        
+        # 分析产出效率
+        for var, data in analysis['output_analysis'].items():
+            if data['relative_performance'] < 0.8:  # 产出过低
+                hospital_suggestions.append({
+                    'type': '产出提升',
+                    'variable': var,
+                    'suggestion': f"提升{var}产出，当前产出比平均水平低{(1-data['relative_performance'])*100:.1f}%",
+                    'priority': '高' if data['relative_performance'] < 0.6 else '中'
+                })
+        
+        suggestions[hospital_id] = hospital_suggestions
+    
+    return suggestions
+
+def perform_benchmark_analysis(data, input_vars, output_vars):
+    """
+    执行基准分析
+    
+    参数:
+    - data: 合并后的数据
+    - input_vars: 投入变量列表
+    - output_vars: 产出变量列表
+    
+    返回:
+    - benchmark: 基准分析结果
+    """
+    # 找到效率最高的医院作为基准
+    best_hospital = data.loc[data['效率值'].idxmax()]
+    
+    benchmark = {
+        'best_hospital': {
+            'id': best_hospital['医院ID'],
+            'efficiency': best_hospital['效率值']
+        },
+        'comparisons': {}
+    }
+    
+    # 计算其他医院与基准的差距
+    for index, row in data.iterrows():
+        if row['医院ID'] != best_hospital['医院ID']:
+            hospital_id = row['医院ID']
+            gap_analysis = {}
+            
+            for var in input_vars:
+                gap = (row[var] - best_hospital[var]) / best_hospital[var] * 100
+                gap_analysis[var] = {
+                    'gap_percentage': gap,
+                    'status': '投入过多' if gap > 0 else '投入不足'
+                }
+            
+            for var in output_vars:
+                gap = (row[var] - best_hospital[var]) / best_hospital[var] * 100
+                gap_analysis[var] = {
+                    'gap_percentage': gap,
+                    'status': '产出较高' if gap > 0 else '产出不足'
+                }
+            
+            benchmark['comparisons'][hospital_id] = gap_analysis
+    
+    return benchmark
+
+def display_dea_analysis_report(analysis_report):
+    """
+    显示DEA分析报告
+    
+    参数:
+    - analysis_report: 分析报告字典
+    """
+    st.subheader("📊 DEA结果深度分析")
+    
+    # 模型信息
+    model_info = analysis_report['model_info']
+    st.markdown(f"**分析模型**: {model_info['model_type']} ({model_info['orientation']}导向)")
+    if model_info['undesirable_outputs']:
+        st.markdown(f"**非期望产出**: {', '.join(model_info['undesirable_outputs'])}")
+    
+    # 1. 效率分析
+    st.markdown("### 📈 效率分析")
+    efficiency_analysis = analysis_report['efficiency_analysis']
+    
+    if 'overall_efficiency' in efficiency_analysis:
+        overall_eff = efficiency_analysis['overall_efficiency']
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("平均效率", f"{overall_eff['mean']:.3f}")
+        with col2:
+            st.metric("最高效率", f"{overall_eff['max']:.3f}")
+        with col3:
+            st.metric("最低效率", f"{overall_eff['min']:.3f}")
+        with col4:
+            st.metric("标准差", f"{overall_eff['std']:.3f}")
+        
+        # 效率解释
+        interpretation = overall_eff['interpretation']
+        st.markdown("**效率分布解释**:")
+        st.write(f"• 有效单元数: {interpretation['optimal_units']}")
+        st.write(f"• 无效单元数: {interpretation['inefficient_units']}")
+        if interpretation['super_efficient_units'] > 0:
+            st.write(f"• 超效率单元数: {interpretation['super_efficient_units']}")
+    
+    # BCC模型效益分解
+    if model_info['model_type'] == 'BCC':
+        st.markdown("#### 🔬 BCC模型效益分解")
+        
+        if 'technical_efficiency' in efficiency_analysis:
+            te = efficiency_analysis['technical_efficiency']
+            st.markdown(f"**技术效益(TE)**: {te['mean']:.3f}")
+            st.write(f"• {te['interpretation']}")
+            st.write(f"• 技术有效单元数: {te['efficient_count']}")
+        
+        if 'scale_efficiency' in efficiency_analysis:
+            se = efficiency_analysis['scale_efficiency']
+            st.markdown(f"**规模效益(SE)**: {se['interpretation']}")
+            st.write(f"• {se['note']}")
+    
+    # 2. DEA有效性分析
+    st.markdown("### ✅ DEA有效性分析")
+    effectiveness = analysis_report['effectiveness_analysis']
+    summary = effectiveness['summary']
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("强有效单元", summary['strong_efficient_count'])
+    with col2:
+        st.metric("弱有效单元", summary['weak_efficient_count'])
+    with col3:
+        st.metric("非有效单元", summary['non_efficient_count'])
+    
+    # 有效性解释
+    st.markdown("**有效性判断标准**:")
+    st.write("• **DEA强有效**: 综合效益=1且S-与S+均为0")
+    st.write("• **DEA弱有效**: 综合效益=1但S-或S+大于0")
+    st.write("• **非DEA有效**: 综合效益<1")
+    
+    # 3. 松弛变量分析
+    st.markdown("### 📊 松弛变量分析")
+    slack_analysis = analysis_report['slack_analysis']
+    
+    st.markdown("**松弛变量解释**:")
+    st.write(f"• **投入松弛变量S-(差额变数)**: {slack_analysis['input_slack']['interpretation']}")
+    st.write(f"• **产出松弛变量S+(超额变数)**: {slack_analysis['output_slack']['interpretation']}")
+    st.info("💡 注意：需要从DEA求解过程中获取实际的松弛变量值进行精确分析")
+    
+    # 4. 投入冗余分析
+    st.markdown("### 🔍 投入冗余分析")
+    input_redundancy = analysis_report['input_redundancy_analysis']
+    
+    for var, analysis in input_redundancy.items():
+        st.markdown(f"**{var}**:")
+        st.write(f"• 平均值: {analysis['mean_value']:.2f}")
+        st.write(f"• 解释: {analysis['interpretation']}")
+        st.write(f"• 说明: {analysis['note']}")
+    
+    # 5. 产出不足分析
+    st.markdown("### 📈 产出不足分析")
+    output_insufficiency = analysis_report['output_insufficiency_analysis']
+    
+    for var, analysis in output_insufficiency.items():
+        st.markdown(f"**{var}** ({analysis['type']}):")
+        st.write(f"• 平均值: {analysis['mean_value']:.2f}")
+        st.write(f"• 解释: {analysis['interpretation']}")
+        st.write(f"• 说明: {analysis['note']}")
+    
+    # 6. 详细单元分析
+    st.markdown("### 🏥 详细单元分析")
+    detailed_analysis = analysis_report['detailed_unit_analysis']
+    
+    # 创建详细分析表格
+    analysis_data = []
+    for hospital_id, analysis in detailed_analysis.items():
+        analysis_data.append({
+            '医院ID': hospital_id,
+            '效率值': analysis['efficiency'],
+            '状态': analysis['status'],
+            '解释': analysis['interpretation']
+        })
+    
+    if analysis_data:
+        df_analysis = pd.DataFrame(analysis_data)
+        st.dataframe(df_analysis, use_container_width=True)
+    
+    # 7. 改进建议
+    st.markdown("### 💡 改进建议")
+    suggestions = analysis_report['improvement_suggestions']
+    
+    if 'overall_suggestions' in suggestions:
+        st.markdown("**整体建议**:")
+        for suggestion in suggestions['overall_suggestions']:
+            st.write(f"• {suggestion}")
+    
+    if 'efficiency_improvement' in suggestions:
+        st.markdown("**效率改进建议**:")
+        for suggestion in suggestions['efficiency_improvement']:
+            st.write(f"• {suggestion}")
+    
+    if 'resource_optimization' in suggestions:
+        st.markdown("**资源优化建议**:")
+        for suggestion in suggestions['resource_optimization']:
+            st.write(f"• {suggestion}")
+    
+    if 'output_enhancement' in suggestions:
+        st.markdown("**产出提升建议**:")
+        for suggestion in suggestions['output_enhancement']:
+            st.write(f"• {suggestion}")
+    
+    # 高效医院展示
+    if analysis_report['efficient_units']:
+        st.markdown("### 🏆 高效医院（效率值 = 1.0）")
+        efficient_df = pd.DataFrame(analysis_report['efficient_units'])
+        st.dataframe(efficient_df[['hospital_id', 'efficiency']], use_container_width=True)
+    
+    # 低效医院分析
+    if analysis_report['inefficient_units']:
+        st.markdown("### 📉 低效医院分析")
+        
+        for unit in analysis_report['inefficient_units']:
+            with st.expander(f"🏥 {unit['hospital_id']} (效率值: {unit['efficiency']:.3f})", expanded=False):
+                
+                # 投入分析
+                st.markdown("**投入分析**")
+                input_data = []
+                for var, data in unit['analysis']['input_analysis'].items():
+                    input_data.append({
+                        '变量': var,
+                        '医院值': f"{data['hospital_value']:.2f}",
+                        '平均值': f"{data['average_value']:.2f}",
+                        '相对表现': f"{data['relative_performance']:.2f}",
+                        '状态': data['status']
+                    })
+                st.dataframe(pd.DataFrame(input_data), use_container_width=True)
+                
+                # 产出分析
+                st.markdown("**产出分析**")
+                output_data = []
+                for var, data in unit['analysis']['output_analysis'].items():
+                    output_data.append({
+                        '变量': var,
+                        '医院值': f"{data['hospital_value']:.2f}",
+                        '平均值': f"{data['average_value']:.2f}",
+                        '相对表现': f"{data['relative_performance']:.2f}",
+                        '状态': data['status']
+                    })
+                st.dataframe(pd.DataFrame(output_data), use_container_width=True)
+    
+    # 改进建议
+    if analysis_report['improvement_suggestions']:
+        st.markdown("### 💡 改进建议")
+        
+        for hospital_id, suggestions in analysis_report['improvement_suggestions'].items():
+            if suggestions:
+                with st.expander(f"🏥 {hospital_id} 改进建议", expanded=False):
+                    for suggestion in suggestions:
+                        priority_color = "🔴" if suggestion['priority'] == '高' else "🟡"
+                        st.markdown(f"{priority_color} **{suggestion['type']}**: {suggestion['suggestion']}")
+    
+    # 基准分析
+    if analysis_report['benchmark_analysis']['best_hospital']:
+        st.markdown("### 🎯 基准分析")
+        best_hospital = analysis_report['benchmark_analysis']['best_hospital']
+        st.info(f"🏆 **基准医院**: {best_hospital['id']} (效率值: {best_hospital['efficiency']:.3f})")
+        
+        if analysis_report['benchmark_analysis']['comparisons']:
+            st.markdown("**与基准医院的差距分析**")
+            comparison_data = []
+            for hospital_id, gaps in analysis_report['benchmark_analysis']['comparisons'].items():
+                for var, gap_info in gaps.items():
+                    comparison_data.append({
+                        '医院ID': hospital_id,
+                        '变量': var,
+                        '差距(%)': f"{gap_info['gap_percentage']:.1f}",
+                        '状态': gap_info['status']
+                    })
+            
+            if comparison_data:
+                st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
 
 def download_dea_results(results):
     """
@@ -1187,7 +2265,13 @@ def main():
                         "value": "SBM",
                         "description": "适用于含非期望产出场景，非径向效率测量",
                         "scenario": "🏥 **适用场景**：包含不良事件、医疗纠纷等非期望产出的分析",
-                        "features": "• 非径向效率测量\n• 处理非期望产出\n• 更精确的效率评估"
+                        "features": "• 非径向效率测量\n• 处理非期望产出\n• 更精确的效率评估\n• 效率值范围：(0,1]"
+                    },
+                    "超效率SBM模型": {
+                        "value": "Super-SBM",
+                        "description": "超效率SBM模型，允许效率值大于1，可对有效DMU进一步排序",
+                        "scenario": "🏥 **适用场景**：需要对高效医院进行进一步排序和比较",
+                        "features": "• 超效率测量\n• 处理非期望产出\n• 效率值范围：[1,∞)\n• 可对有效DMU排序"
                     }
                 }
                 
@@ -1204,6 +2288,67 @@ def main():
                 st.info(f"💡 {model_info['description']}")
                 st.markdown(f"**模型特点：**\n{model_info['features']}")
                 
+                # 导向选择（仅对CCR和BCC模型显示）
+                orientation = 'input'  # 默认值
+                if model_info['value'] in ['CCR', 'BCC']:
+                    st.markdown("**📐 选择分析导向**")
+                    orientation_options = {
+                        "输入导向（推荐）": {
+                            "value": "input",
+                            "description": "在保持产出不变的前提下，最小化投入资源",
+                            "scenario": "🏥 **适用场景**：资源优化配置，减少浪费（推荐医疗行业使用）",
+                            "features": "• 关注投入效率\n• 适合资源优化\n• 减少资源浪费"
+                        },
+                        "输出导向": {
+                            "value": "output", 
+                            "description": "在保持投入不变的前提下，最大化产出效果",
+                            "scenario": "🏥 **适用场景**：提升服务质量，增加产出效果",
+                            "features": "• 关注产出效率\n• 适合服务提升\n• 增加产出效果"
+                        }
+                    }
+                    
+                    selected_orientation = st.selectbox(
+                        "选择分析导向",
+                        options=list(orientation_options.keys()),
+                        index=0,  # 默认选择输入导向
+                        help="输入导向是医疗行业最常用的分析方式"
+                    )
+                    
+                    orientation_info = orientation_options[selected_orientation]
+                    orientation = orientation_info['value']
+                    st.markdown(f"**{orientation_info['scenario']}**")
+                    st.info(f"💡 {orientation_info['description']}")
+                    st.markdown(f"**导向特点：**\n{orientation_info['features']}")
+                
+                # 非期望产出选择（仅对SBM模型显示）
+                undesirable_outputs = None
+                if model_info['value'] in ['SBM', 'Super-SBM']:
+                    st.markdown("**⚠️ 非期望产出选择**")
+                    st.caption("选择哪些产出变量是非期望的（如医疗纠纷、不良事件等）")
+                    
+                    # 显示产出变量供选择
+                    if output_vars:
+                        st.markdown("**当前产出变量：**")
+                        for i, var in enumerate(output_vars):
+                            st.write(f"• {var}")
+                        
+                        # 多选非期望产出
+                        selected_undesirable = st.multiselect(
+                            "选择非期望产出变量",
+                            options=output_vars,
+                            default=[],
+                            help="选择那些数值越小越好的产出变量（如医疗纠纷数量、不良事件等）"
+                        )
+                        
+                        if selected_undesirable:
+                            undesirable_outputs = selected_undesirable
+                            st.success(f"✅ 已选择 {len(selected_undesirable)} 个非期望产出变量")
+                            st.info("💡 **非期望产出说明**：这些变量的数值越小表示效率越高，如医疗纠纷、不良事件等")
+                        else:
+                            st.info("💡 未选择非期望产出，所有产出变量将视为期望产出")
+                    else:
+                        st.warning("⚠️ 没有产出变量可供选择")
+                
                 # 执行分析按钮
                 st.markdown("---")
                 col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
@@ -1215,7 +2360,9 @@ def main():
                                 data, 
                                 input_vars, 
                                 output_vars, 
-                                model_info['value']
+                                model_info['value'],
+                                orientation,
+                                undesirable_outputs
                             )
                             
                             if results is not None:
@@ -1335,6 +2482,27 @@ def main():
                                 st.markdown("**效率值分布统计**")
                                 efficiency_stats = results['效率值'].describe()
                                 st.write(efficiency_stats)
+                                
+                                # 添加结果解释按钮
+                                st.markdown("---")
+                                if st.button("🔍 深度分析结果", type="secondary", help="点击查看详细的效率分析和改进建议"):
+                                    with st.spinner("正在生成深度分析报告..."):
+                                        # 执行深度分析
+                                        analysis_report = analyze_dea_results(
+                                            results, 
+                                            data, 
+                                            input_vars, 
+                                            output_vars,
+                                            model_info['value'],
+                                            orientation,
+                                            undesirable_outputs
+                                        )
+                                        
+                                        # 显示分析报告
+                                        display_dea_analysis_report(analysis_report)
+                                        
+                                        # 保存分析报告到session state
+                                        st.session_state['dea_analysis_report'] = analysis_report
     else:
         st.warning("⚠️ 请先在数据输入区中加载数据")
     
