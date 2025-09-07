@@ -430,7 +430,8 @@ class CustomDEA:
             result = self._solve_linear_program(c, A_ub, b_ub, A_eq, b_eq, bounds)
             
             if result and result.success:
-                efficiency_scores[dmu] = result.x[0]
+                # BCC模型效率值应该在[0,1]范围内
+                efficiency_scores[dmu] = min(max(result.x[0], 0.0), 1.0)
                 lambda_values[dmu] = result.x[1:]
                 
                 # 计算松弛变量
@@ -516,7 +517,12 @@ class CustomDEA:
             
             if result and result.success:
                 phi = result.x[0]
-                efficiency_scores[dmu] = 1.0 / phi if phi > 0 else 1.0
+                # BCC模型效率值应该在[0,1]范围内
+                # 对于输出导向，效率值 = 1/φ，但需要确保在合理范围内
+                if phi > 0:
+                    efficiency_scores[dmu] = min(1.0 / phi, 1.0)  # 限制最大值为1.0
+                else:
+                    efficiency_scores[dmu] = 1.0
                 lambda_values[dmu] = result.x[1:]
                 
                 # 计算松弛变量
@@ -3066,8 +3072,9 @@ def main():
                                         # 显示效率分解分析结果
                                         display_efficiency_decomposition(decomposition_results)
                                         
-                                        # 提示用户刷新页面查看更新后的排名表格
+                                        # 提示用户并刷新页面
                                         st.success("✅ 效率分解分析完成！排名表格已更新，显示三种效率值。")
+                                        st.rerun()  # 刷新页面以更新排名表格
                                 else:
                                     st.error("❌ 缺少必要的数据或变量选择信息")
                     
