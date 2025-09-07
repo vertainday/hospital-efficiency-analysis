@@ -18,13 +18,103 @@ try:
 except ImportError:
     PYDEA_AVAILABLE = False
     print(" pyDEA库不可用，将使用自定义DEA实现")
+
+class CustomDEA:
+    """自定义DEA实现，支持CCR、BCC和SBM模型（备用方案）"""
+    
+    def __init__(self, input_data, output_data):
+        self.input_data = np.array(input_data)
+        self.output_data = np.array(output_data)
+        self.n_dmus = self.input_data.shape[0]
+        self.n_inputs = self.input_data.shape[1]
+        self.n_outputs = self.output_data.shape[1]
+        
+    def ccr(self):
+        """CCR模型 - 规模报酬不变"""
+        return self._solve_dea_model(constant_returns=True)
+    
+    def bcc(self):
+        """BCC模型 - 规模报酬可变"""
+        return self._solve_dea_model(constant_returns=False)
+    
+    def sbm(self):
+        """SBM模型 - 非径向模型"""
+        return self._solve_sbm_model()
+    
+    def efficiency(self):
+        """默认效率计算方法"""
+        return self.ccr()
+    
+    def _solve_dea_model(self, constant_returns=True):
+        """求解DEA模型"""
+        efficiency_scores = []
+        
+        for i in range(self.n_dmus):
+            # 目标函数：最大化效率
+            c = np.zeros(self.n_dmus + 1)
+            c[0] = -1  # 效率分数
+            
+            # 约束条件
+            A_ub = []
+            b_ub = []
+            
+            # 输入约束
+            for j in range(self.n_inputs):
+                constraint = np.zeros(self.n_dmus + 1)
+                constraint[1:] = self.input_data[:, j]
+                constraint[0] = -self.input_data[i, j]
+                A_ub.append(constraint)
+                b_ub.append(0)
+            
+            # 输出约束
+            for j in range(self.n_outputs):
+                constraint = np.zeros(self.n_dmus + 1)
+                constraint[1:] = -self.output_data[:, j]
+                constraint[0] = self.output_data[i, j]
+                A_ub.append(constraint)
+                b_ub.append(0)
+            
+            # 规模报酬约束
+            if constant_returns:
+                constraint = np.zeros(self.n_dmus + 1)
+                constraint[1:] = 1
+                A_ub.append(constraint)
+                b_ub.append(1)
+                constraint = np.zeros(self.n_dmus + 1)
+                constraint[1:] = -1
+                A_ub.append(constraint)
+                b_ub.append(-1)
+            
+            # 非负约束
+            bounds = [(0, None) for _ in range(self.n_dmus + 1)]
+            
+            try:
+                result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+                if result.success:
+                    efficiency_scores.append(-result.fun)
+                else:
+                    efficiency_scores.append(0.0)
+            except:
+                efficiency_scores.append(0.0)
+        
+        return np.array(efficiency_scores)
+    
+    def _solve_sbm_model(self):
+        """求解SBM模型（简化版本）"""
+        # 简化的SBM实现，使用CCR作为近似
+        return self.ccr()
+
 class DEAWrapper:
     """DEA分析包装器，优先使用pyDEA，备用自定义实现"""
     
     def __init__(self, input_data, output_data, dmu_names=None):
         self.input_data = np.array(input_data)
         self.output_data = np.array(output_data)
-        self.dmu_names = dmu_names or [f'DMU{i+1}' for i in range(len(input_data))]
+        # 修复numpy数组的布尔值判断问题
+        if dmu_names is not None:
+            self.dmu_names = list(dmu_names) if hasattr(dmu_names, '__iter__') else [dmu_names]
+        else:
+            self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
         
         # 尝试初始化pyDEA
         self.use_pydea = False
@@ -156,9 +246,11 @@ class DEAWrapper:
 DEA = DEAWrapper
 
 # 导入QCA分析模块
-QCA_AVAILABLE = False
+QCA_AVAILABLE = True
+
 try:
-    from qca_analysis import (
+    # 导入纯Python QCA实现
+    from qca_analysis_python import (
         check_r_connection, 
         perform_necessity_analysis, 
         perform_sufficiency_analysis,
@@ -166,29 +258,13 @@ try:
         perform_minimization,
         perform_complete_qca_analysis
     )
-    QCA_AVAILABLE = True
-    print("✓ QCA模块导入成功")
-except ImportError as e:
-    print(f"❌ QCA模块导入失败: {e}")
-    # 创建占位符函数以避免运行时错误
-    def check_r_connection():
-        return False, "QCA模块不可用"
-    def perform_necessity_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_sufficiency_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_truth_table_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_minimization(*args, **kwargs):
-        return pd.DataFrame()
-    def perform_complete_qca_analysis(*args, **kwargs):
-        return pd.DataFrame()
-    QCA_AVAILABLE = False
+    print("✓ 成功加载纯Python QCA实现")
 except Exception as e:
-    print(f"❌ QCA模块初始化失败: {e}")
-    # 创建占位符函数以避免运行时错误
+    print(f"❌ 纯Python QCA实现加载失败: {e}")
+    QCA_AVAILABLE = False
+    # 创建占位符函数
     def check_r_connection():
-        return False, "QCA模块不可用"
+        return False, "纯Python QCA实现不可用"
     def perform_necessity_analysis(*args, **kwargs):
         return pd.DataFrame()
     def perform_sufficiency_analysis(*args, **kwargs):
@@ -199,7 +275,6 @@ except Exception as e:
         return pd.DataFrame()
     def perform_complete_qca_analysis(*args, **kwargs):
         return pd.DataFrame()
-    QCA_AVAILABLE = False
 
 # 设置页面配置
 st.set_page_config(
@@ -1280,7 +1355,7 @@ def main():
         """)
         st.markdown('</div>', unsafe_allow_html=True)
         return
-    
+        
     if 'data' in st.session_state and 'dea_results' in st.session_state:
         data = st.session_state['data']
         dea_results = st.session_state['dea_results']
@@ -1320,6 +1395,26 @@ def main():
                 st.error("❌ 请至少选择1个条件变量")
             else:
                 st.success(f"✅ 已选择 {len(condition_vars)} 个条件变量")
+                
+                st.subheader("🔧 数据预处理")
+                st.info("正在将条件变量标准化为0-1范围的模糊集...")
+                
+                # 创建数据副本用于QCA分析
+                data_with_efficiency = data.merge(dea_results, on='医院ID', how='left').copy()
+                
+                # 标准化条件变量到0-1范围
+                for var in condition_vars:
+                    min_val = data_with_efficiency[var].min()
+                    max_val = data_with_efficiency[var].max()
+                    if max_val > min_val:  # 避免除以0
+                        data_with_efficiency[var] = (data_with_efficiency[var] - min_val) / (max_val - min_val)
+                    else:
+                        st.warning(f"⚠️ 变量 '{var}' 的值全部相同，标准化后将为常数")
+                
+                # 显示标准化后的数据预览
+                st.markdown("### 📊 标准化后数据预览")
+                st.dataframe(data_with_efficiency[condition_vars + ['效率值']].head(), use_container_width=True)
+                # ===== 标准化步骤结束 =====
                 
                 # 必要性分析配置
                 st.subheader("🔍 必要性分析配置")
