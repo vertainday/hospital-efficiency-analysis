@@ -171,6 +171,7 @@ class DEAWrapper:
 DEA = DEAWrapper
 
 # 导入QCA分析模块（纯Python实现）
+QCA_AVAILABLE = False
 try:
     from qca_analysis import (
         check_r_connection, 
@@ -180,10 +181,26 @@ try:
         perform_minimization,
         perform_complete_qca_analysis
     )
+    QCA_AVAILABLE = True
     print("✓ QCA模块（纯Python实现）导入成功")
 except ImportError as e:
-    st.warning(f"QCA模块导入失败: {e}")
     print(f"❌ QCA模块导入失败: {e}")
+    # 创建占位符函数以避免运行时错误
+    def check_r_connection():
+        return False, "QCA模块不可用"
+    def perform_necessity_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_sufficiency_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_truth_table_analysis(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_minimization(*args, **kwargs):
+        return pd.DataFrame()
+    def perform_complete_qca_analysis(*args, **kwargs):
+        return pd.DataFrame()
+except Exception as e:
+    print(f"❌ QCA模块初始化失败: {e}")
+    QCA_AVAILABLE = False
 
 # 设置页面配置
 st.set_page_config(
@@ -930,7 +947,10 @@ def main():
         fsqca_status = "✅" if 'fsqca_results' in st.session_state else "❌"
         st.markdown(f'<div class="metric-card"><h4>fsQCA分析</h4><p style="font-size: 2rem; margin: 0;">{fsqca_status}</p></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown(f'<div class="metric-card"><h4>系统状态</h4><p style="font-size: 1.2rem; margin: 0; color: #1a365d;">运行正常</p></div>', unsafe_allow_html=True)
+        qca_status = "✅" if QCA_AVAILABLE else "❌"
+        status_text = "QCA模块正常" if QCA_AVAILABLE else "QCA模块异常"
+        status_color = "#1a365d" if QCA_AVAILABLE else "#e53e3e"
+        st.markdown(f'<div class="metric-card"><h4>QCA模块</h4><p style="font-size: 1.2rem; margin: 0; color: {status_color};">{qca_status} {status_text}</p></div>', unsafe_allow_html=True)
     
     # ① 数据输入区
     st.markdown('<div class="section-header">① 数据输入区</div>', unsafe_allow_html=True)
@@ -1267,6 +1287,18 @@ def main():
     # ③ fsQCA路径分析区
     st.markdown('<div class="section-header">③ fsQCA路径分析区</div>', unsafe_allow_html=True)
     st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
+    
+    # 检查QCA模块状态
+    if not QCA_AVAILABLE:
+        st.error("❌ QCA分析模块不可用，请检查模块安装")
+        st.info("💡 **解决方案**：")
+        st.markdown("""
+        1. 确保qca_analysis.py文件存在
+        2. 检查Python环境是否正确
+        3. 重启应用程序
+        """)
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
     
     if 'data' in st.session_state and 'dea_results' in st.session_state:
         data = st.session_state['data']
