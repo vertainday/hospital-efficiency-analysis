@@ -22,9 +22,24 @@ class CustomDEA:
         self.n_inputs = self.input_data.shape[1]
         self.n_outputs = self.output_data.shape[1]
         
-        # 数据预处理：确保所有数据为正数，并标准化以提高数值稳定性
-        self.input_data = np.maximum(self.input_data, 1e-8)
-        self.output_data = np.maximum(self.output_data, 1e-8)
+        # 数据验证：只检查负值，允许0值
+        if np.any(self.input_data < 0):
+            raise ValueError("所有投入变量不能为负数")
+        if np.any(self.output_data < 0):
+            raise ValueError("所有产出变量不能为负数")
+        
+        # 将0替换为极小正值，避免除零错误
+        self.input_data = np.maximum(self.input_data, 1e-10)
+        self.output_data = np.maximum(self.output_data, 1e-10)
+        
+        # 检查常数列（可能导致数值问题）
+        for i in range(self.n_inputs):
+            if np.all(self.input_data[:, i] == self.input_data[0, i]):
+                print(f"警告: 投入变量 {i} 是常数列，可能导致数值问题")
+        
+        for r in range(self.n_outputs):
+            if np.all(self.output_data[:, r] == self.output_data[0, r]):
+                print(f"警告: 产出变量 {r} 是常数列，可能导致数值问题")
         
         # 数据标准化以提高数值稳定性
         self.input_scale = np.mean(self.input_data, axis=0)
@@ -37,6 +52,10 @@ class CustomDEA:
         # 标准化数据
         self.input_data_norm = self.input_data / self.input_scale
         self.output_data_norm = self.output_data / self.output_scale
+        
+        # 存储松弛变量
+        self.slack_input = {}
+        self.slack_output = {}
     
     def ccr_input_oriented(self):
         """CCR模型 - 输入导向（规模报酬不变）
@@ -114,9 +133,9 @@ class CustomDEA:
         - 规模报酬约束（BCC）：∑λⱼ = 1
         - 非负约束：λⱼ ≥ 0
         """
-        # 使用标准化数据以提高数值稳定性
-        input_data = self.input_data_norm
-        output_data = self.output_data_norm
+        # 使用原始数据，不进行标准化
+        input_data = self.input_data
+        output_data = self.output_data
         
         # 变量：θ, λ₁, λ₂, ..., λₙ
         n_vars = self.n_dmus + 1
@@ -149,7 +168,8 @@ class CustomDEA:
         
         # 规模报酬约束
         if model == 'bcc':
-            # BCC模型：∑λⱼ = 1
+            # BCC模型：∑λⱼ = 1 (等式约束)
+            # 需要转换为两个不等式约束：∑λⱼ ≤ 1 和 ∑λⱼ ≥ 1
             constraint = np.zeros(n_vars, dtype=np.float64)
             constraint[1:] = 1.0  # λⱼ的系数
             constraint[0] = 0.0   # θ不参与此约束
@@ -178,6 +198,27 @@ class CustomDEA:
                 
                 if result.success and result.fun is not None and not np.isnan(result.fun):
                     theta = -result.fun  # 因为目标函数是-θ
+                    
+                    # 计算松弛变量
+                    if result.x is not None:
+                        lambda_vals = result.x[1:1+self.n_dmus]
+                        
+                        # 计算投入松弛
+                        s_minus = np.zeros(self.n_inputs)
+                        for i in range(self.n_inputs):
+                            s_minus[i] = theta * input_data[dmu_idx, i] - np.dot(lambda_vals, input_data[:, i])
+                            s_minus[i] = max(0, s_minus[i])  # 确保非负
+                        
+                        # 计算产出松弛
+                        s_plus = np.zeros(self.n_outputs)
+                        for r in range(self.n_outputs):
+                            s_plus[r] = np.dot(lambda_vals, output_data[:, r]) - output_data[dmu_idx, r]
+                            s_plus[r] = max(0, s_plus[r])  # 确保非负
+                        
+                        # 存储松弛变量
+                        self.slack_input[dmu_idx] = s_minus
+                        self.slack_output[dmu_idx] = s_plus
+                    
                     # 确保效率值在合理范围内
                     theta = max(0.0, min(theta, 1.0))
                     return theta
@@ -223,9 +264,9 @@ class CustomDEA:
         - 规模报酬约束（BCC）：∑λⱼ = 1
         - 非负约束：λⱼ ≥ 0
         """
-        # 使用标准化数据以提高数值稳定性
-        input_data = self.input_data_norm
-        output_data = self.output_data_norm
+        # 使用原始数据，不进行标准化
+        input_data = self.input_data
+        output_data = self.output_data
         
         # 变量：φ, λ₁, λ₂, ..., λₙ
         n_vars = self.n_dmus + 1
@@ -257,7 +298,8 @@ class CustomDEA:
         
         # 规模报酬约束
         if model == 'bcc':
-            # BCC模型：∑λⱼ = 1
+            # BCC模型：∑λⱼ = 1 (等式约束)
+            # 需要转换为两个不等式约束：∑λⱼ ≤ 1 和 ∑λⱼ ≥ 1
             constraint = np.zeros(n_vars, dtype=np.float64)
             constraint[1:] = 1.0  # λⱼ的系数
             constraint[0] = 0.0   # φ不参与此约束
@@ -286,12 +328,11 @@ class CustomDEA:
                 
                 if result.success and result.fun is not None and not np.isnan(result.fun):
                     phi = result.fun
-                    # 输出导向的效率值是1/φ
-                    if phi > 0:
-                        efficiency = 1.0 / phi
-                        return max(0.0, min(efficiency, 1.0))
-                    else:
-                        return 1.0
+                    # 输出导向的效率值 = phi (不是1/phi)
+                    # phi ≤ 1 表示DMU有效，phi > 1 表示DMU无效
+                    return min(max(phi, 0.0), 1.0)
+                else:
+                    return 1.0  # 默认返回1.0
             except Exception as e:
                 continue
         
@@ -404,16 +445,16 @@ class CustomDEA:
             constraint = np.zeros(n_vars)
             constraint[0] = self.output_data[dmu_idx, r]  # t的系数
             
-            # μⱼ的系数
+            # μⱼ的系数（添加负号）
             for j in range(self.n_dmus):
                 if super_efficiency and j == dmu_idx:
                     # 超效率模型排除被评估DMU
                     constraint[1 + j] = 0
                 else:
-                    constraint[1 + j] = -self.output_data[j, r]  # 负号因为要减去
+                    constraint[1 + j] = -self.output_data[j, r]  # 添加负号
             
-            # Sᵣᵍ⁺的系数
-            constraint[1 + self.n_dmus + self.n_inputs + r_idx] = -1
+            # Sᵣᵍ⁺的系数（改为正号）
+            constraint[1 + self.n_dmus + self.n_inputs + r_idx] = 1
             
             A_eq.append(constraint)
             b_eq.append(0)
@@ -450,18 +491,113 @@ class CustomDEA:
             bounds.append((0, None))  # Sᶠᵇ⁺ ≥ 0
         
         # 求解线性规划
-        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
-        
-        if result.success:
-            rho = result.fun
-            if super_efficiency:
-                # 超效率SBM：ρ ≥ 1
-                return max(rho, 1.0)
+        try:
+            result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+            
+            if result.success and result.x is not None:
+                # 提取解
+                t = result.x[0]
+                s_minus = result.x[1 + self.n_dmus:1 + self.n_dmus + self.n_inputs]
+                
+                # 计算投入松弛项
+                input_slack_term = 0.0
+                for i in range(self.n_inputs):
+                    input_slack_term += s_minus[i] / (self.n_inputs * self.input_data[dmu_idx, i])
+                
+                # 计算产出松弛项
+                output_slack_term = 0.0
+                for r_idx in range(n_good_outputs):
+                    s_plus = result.x[1 + self.n_dmus + self.n_inputs + r_idx]
+                    output_slack_term += s_plus / (n_good_outputs * self.output_data[dmu_idx, good_outputs[r_idx]])
+                
+                # 计算非期望产出松弛项（如果存在）
+                for f_idx in range(n_bad_outputs):
+                    s_plus = result.x[1 + self.n_dmus + self.n_inputs + n_good_outputs + f_idx]
+                    output_slack_term += s_plus / (n_bad_outputs * self.output_data[dmu_idx, bad_outputs[f_idx]])
+                
+                # 计算最终效率值
+                numerator = 1 - input_slack_term
+                denominator = 1 + output_slack_term
+                
+                # 避免除以接近0的值
+                if denominator < 1e-10:
+                    denominator = 1e-10
+                
+                efficiency = numerator / denominator
+                
+                if super_efficiency:
+                    return max(efficiency, 1.0)
+                else:
+                    return min(max(efficiency, 0.0), 1.0)
             else:
-                # 普通SBM：ρ ∈ (0,1]
-                return min(max(rho, 0.0), 1.0)
-        else:
+                return 0.0 if not super_efficiency else 1.0
+        except Exception as e:
+            print(f"SBM求解错误 (DMU {dmu_idx}): {str(e)}")
             return 0.0 if not super_efficiency else 1.0
+
+class DEAWrapper:
+    """DEA分析包装器，使用自定义DEA实现"""
+    
+    def __init__(self, input_data, output_data, dmu_names=None):
+        self.input_data = np.array(input_data)
+        self.output_data = np.array(output_data)
+        
+        # 修复numpy数组的布尔值判断问题
+        if dmu_names is not None:
+            # 检查是否是可迭代的且不是字符串
+            if hasattr(dmu_names, '__iter__') and not isinstance(dmu_names, str):
+                try:
+                    # 尝试转换为列表
+                    self.dmu_names = list(dmu_names)
+                except:
+                    # 如果转换失败，创建默认名称
+                    self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
+            else:
+                self.dmu_names = [dmu_names]
+        else:
+            self.dmu_names = [f'DMU{i+1}' for i in range(len(input_data))]
+        
+        # 使用自定义DEA实现
+        self.dea = CustomDEA(self.input_data, self.output_data)
+        print("✅ 使用自定义DEA实现进行DEA分析")
+    
+    # 新增方法：支持不同的模型和方向选择
+    def ccr_input_oriented(self):
+        """CCR模型 - 输入导向"""
+        return self.dea.ccr_input_oriented()
+    
+    def ccr_output_oriented(self):
+        """CCR模型 - 输出导向"""
+        return self.dea.ccr_output_oriented()
+    
+    def bcc_input_oriented(self):
+        """BCC模型 - 输入导向"""
+        return self.dea.bcc_input_oriented()
+    
+    def bcc_output_oriented(self):
+        """BCC模型 - 输出导向"""
+        return self.dea.bcc_output_oriented()
+    
+    # 保持向后兼容的方法
+    def ccr(self):
+        """CCR模型 - 默认输入导向（向后兼容）"""
+        return self.ccr_input_oriented()
+    
+    def bcc(self):
+        """BCC模型 - 默认输入导向（向后兼容）"""
+        return self.bcc_input_oriented()
+    
+    def sbm(self, undesirable_outputs=None):
+        """SBM模型 - 包含非期望产出的松弛基础模型"""
+        return self.dea.sbm(undesirable_outputs=undesirable_outputs)
+    
+    def super_sbm(self, undesirable_outputs=None):
+        """超效率SBM模型 - 允许效率值大于1"""
+        return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
+    
+    def efficiency(self):
+        """默认效率计算方法"""
+        return self.ccr()
 
 class DEAWrapper:
     """DEA分析包装器，使用自定义DEA实现"""
