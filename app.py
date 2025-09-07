@@ -577,15 +577,24 @@ st.subheader("📥 数据输入")
 
 # 文件上传
 uploaded_file = st.file_uploader(
-    "请上传包含医院数据的CSV文件",
-    type=['csv'],
-    help="文件应包含投入变量、产出变量和DMU标识列"
+    "请上传包含医院数据的文件",
+    type=['csv', 'xlsx'],
+    help="支持CSV和Excel文件，文件应包含投入变量、产出变量和DMU标识列"
 )
 
 if uploaded_file is not None:
     try:
-        # 读取数据
-        data = pd.read_csv(uploaded_file)
+        # 根据文件类型读取数据
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        
+        if file_extension == 'csv':
+            data = pd.read_csv(uploaded_file)
+        elif file_extension == 'xlsx':
+            data = pd.read_excel(uploaded_file)
+        else:
+            st.error("❌ 不支持的文件格式，请上传CSV或Excel文件")
+            st.stop()
+        
         st.session_state['data'] = data
         
         st.success(f"✅ 成功上传数据文件，包含 {len(data)} 行数据")
@@ -745,7 +754,7 @@ with st.sidebar:
     
     st.markdown("## 📋 使用说明")
     st.markdown("""
-    1. 上传包含医院数据的CSV文件
+    1. 上传包含医院数据的CSV或Excel文件
     2. 选择投入变量和产出变量
     3. 选择DMU标识列
     4. 选择DEA模型类型和导向
