@@ -2617,106 +2617,116 @@ def main():
                 with col_btn3:
                     if st.button("📐 查看数学公式", type="secondary", use_container_width=True):
                         display_dea_formulas()
-                                # 显示结果
-                                st.subheader("📊 效率分析结果")
+                
+                # 显示DEA分析结果
+                if 'dea_results' in st.session_state:
+                    results = st.session_state['dea_results']
+                    
+                    # 显示结果
+                    st.subheader("📊 效率分析结果")
 
-                                # 显示效率值表格
-                                st.markdown("**效率值排名（按效率值降序排列）**")
-                                try:
-                                    results_display = results.copy()
-                                except Exception as e:
-                                    st.error(f"结果数据复制失败: {e}")
-                                    results_display = results
-                                
-                                # 按效率值降序排序
-                                results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                                results_display['效率值'] = results_display['效率值'].round(3)
-                                results_display['排名'] = range(1, len(results_display) + 1)
-                                
-                                # 重新排列列顺序
-                                results_display = results_display[['排名', 'DMU', '效率值']]
-                                
-                                # 应用蓝色渐变背景样式
-                                st.markdown("""
-                                <style>
-                                .efficiency-table {
-                                    background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
-                                    border-radius: 10px;
-                                    padding: 1rem;
-                                    margin: 1rem 0;
-                                    box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
-                                }
-                                </style>
-                                """, unsafe_allow_html=True)
-                                
-                                st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
-                                st.dataframe(
-                                    results_display,
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                                st.markdown('</div>', unsafe_allow_html=True)
-                                
-                                # 高亮最优DMU
-                                best_dmu = results.iloc[0]
-                                st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (效率值: {best_dmu['效率值']:.3f})")
-                                
-                                # 创建效率排名图表
-                                st.subheader("📈 效率排名可视化")
-                                fig = create_efficiency_chart(results)
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # 提供结果下载
-                                st.subheader("💾 结果下载")
-                                csv_data = download_dea_results(results)
-                                
-                                st.download_button(
-                                    label="📥 下载DEA分析结果 (CSV)",
-                                    data=csv_data,
-                                    file_name=f"DEA分析结果_{model_info['value']}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    mime="text/csv"
-                                )
-                                
-                                # 分析摘要
-                                st.subheader("📋 分析摘要")
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    st.metric("分析医院数", len(results))
-                                
-                                with col2:
-                                    efficient_count = len(results[results['效率值'] >= 0.9999])
-                                    st.metric("有效医院数", efficient_count)
-                                
-                                with col3:
-                                    avg_efficiency = results['效率值'].mean()
-                                    st.metric("平均效率值", f"{avg_efficiency:.3f}")
-                                
-                                # 效率分布统计
-                                st.markdown("**效率值分布统计**")
-                                efficiency_stats = results['效率值'].describe()
-                                st.write(efficiency_stats)
-                                
-                                # 添加结果解释按钮
-                                st.markdown("---")
-                                if st.button("🔍 深度分析结果", type="secondary", help="点击查看详细的效率分析和改进建议"):
-                                    with st.spinner("正在生成深度分析报告..."):
-                                        # 执行深度分析
-                                        analysis_report = analyze_dea_results(
-                                            results, 
-                                            data, 
-                                            input_vars, 
-                                            output_vars,
-                                            model_info['value'],
-                                            orientation,
-                                            undesirable_outputs
-                                        )
-                                        
-                                        # 显示分析报告
-                                        display_dea_analysis_report(analysis_report)
-                                        
-                                        # 保存分析报告到session state
-                                        st.session_state['dea_analysis_report'] = analysis_report
+                    # 显示效率值表格
+                    st.markdown("**效率值排名（按效率值降序排列）**")
+                    try:
+                        results_display = results.copy()
+                    except Exception as e:
+                        st.error(f"结果数据复制失败: {e}")
+                        results_display = results
+                    
+                    # 按效率值降序排序
+                    results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                    results_display['效率值'] = results_display['效率值'].round(3)
+                    results_display['排名'] = range(1, len(results_display) + 1)
+                    
+                    # 重新排列列顺序
+                    results_display = results_display[['排名', 'DMU', '效率值']]
+                    
+                    # 应用蓝色渐变背景样式
+                    st.markdown("""
+                    <style>
+                    .efficiency-table {
+                        background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
+                        border-radius: 10px;
+                        padding: 1rem;
+                        margin: 1rem 0;
+                        box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
+                    st.dataframe(
+                        results_display,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # 高亮最优DMU
+                    best_dmu = results.iloc[0]
+                    st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (效率值: {best_dmu['效率值']:.3f})")
+                    
+                    # 创建效率排名图表
+                    st.subheader("📈 效率排名可视化")
+                    fig = create_efficiency_chart(results)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 提供结果下载
+                    st.subheader("💾 结果下载")
+                    csv_data = download_dea_results(results)
+                    
+                    st.download_button(
+                        label="📥 下载DEA分析结果 (CSV)",
+                        data=csv_data,
+                        file_name=f"DEA分析结果_{st.session_state.get('dea_model', 'Unknown')}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                    
+                    # 分析摘要
+                    st.subheader("📋 分析摘要")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("分析医院数", len(results))
+                    
+                    with col2:
+                        efficient_count = len(results[results['效率值'] >= 0.9999])
+                        st.metric("有效医院数", efficient_count)
+                    
+                    with col3:
+                        avg_efficiency = results['效率值'].mean()
+                        st.metric("平均效率值", f"{avg_efficiency:.3f}")
+                    
+                    # 效率分布统计
+                    st.markdown("**效率值分布统计**")
+                    efficiency_stats = results['效率值'].describe()
+                    st.write(efficiency_stats)
+                    
+                    # 添加结果解释按钮
+                    st.markdown("---")
+                    if st.button("🔍 深度分析结果", type="secondary", help="点击查看详细的效率分析和改进建议"):
+                        with st.spinner("正在生成深度分析报告..."):
+                            # 获取保存的变量信息
+                            input_vars = st.session_state.get('selected_input_vars', [])
+                            output_vars = st.session_state.get('selected_output_vars', [])
+                            model_type = st.session_state.get('dea_model', 'BCC')
+                            
+                            # 执行深度分析
+                            analysis_report = analyze_dea_results(
+                                results, 
+                                data, 
+                                input_vars, 
+                                output_vars,
+                                model_type,
+                                'input',  # 默认输入导向
+                                None  # 默认无非期望产出
+                            )
+                            
+                            # 显示分析报告
+                            display_dea_analysis_report(analysis_report)
+                            
+                            # 保存分析报告到session state
+                            st.session_state['dea_analysis_report'] = analysis_report
     else:
         st.warning("⚠️ 请先在数据输入区中加载数据")
     
