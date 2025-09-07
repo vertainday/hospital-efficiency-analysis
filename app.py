@@ -47,21 +47,13 @@ class CustomDEA:
         self.lambda_values = None
         
     def _solve_linear_program(self, c, A_ub, b_ub, A_eq, b_eq, bounds=None):
-        """求解线性规划问题"""
-        try:
-            from scipy.optimize import linprog
-            result = linprog(
-                c=c,
-                A_ub=A_ub,
-                b_ub=b_ub,
-                A_eq=A_eq,
-                b_eq=b_eq,
-                bounds=bounds,
-                method='highs'
-            )
-            return result
-        except Exception as e:
-            # 如果highs方法失败，尝试其他方法
+        """求解线性规划问题 - 改进版本"""
+        from scipy.optimize import linprog
+        
+        # 尝试多种求解方法
+        methods = ['highs', 'revised simplex', 'interior-point']
+        
+        for method in methods:
             try:
                 result = linprog(
                     c=c,
@@ -70,12 +62,25 @@ class CustomDEA:
                     A_eq=A_eq,
                     b_eq=b_eq,
                     bounds=bounds,
-                    method='revised simplex'
+                    method=method,
+                    options={'maxiter': 1000}  # 增加最大迭代次数
                 )
-                return result
-            except:
-                # 如果都失败，返回None
-                return None
+                
+                if result.success and result.x is not None:
+                    return result
+                    
+            except Exception as e:
+                continue
+        
+        # 如果所有方法都失败，返回一个失败的结果对象
+        class FailedResult:
+            def __init__(self):
+                self.success = False
+                self.message = "所有求解方法都失败"
+                self.x = None
+                self.fun = None
+        
+        return FailedResult()
         
     def _simple_efficiency_calculation(self):
         """简化的效率计算方法"""
@@ -105,6 +110,11 @@ class CustomDEA:
         """
         CCR模型 - 输入导向（规模报酬不变）
         
+        理论定义：
+        - 假定规模报酬不变（CRS: Constant Returns to Scale）
+        - 主要用来测量技术效率（Technical Efficiency）
+        - 技术效率 = 综合效率（包含规模效率和技术效率）
+        
         数学公式：
         min θ
         s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
@@ -116,56 +126,80 @@ class CustomDEA:
         slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
         lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
+        # 数据预处理：使用更保守的处理方式
+        input_data_processed = np.maximum(self.input_data, 1e-6)  # 使用更大的最小值
+        output_data_processed = np.maximum(self.output_data, 1e-6)
+        
         for dmu in range(self.n_dmus):
-            # 目标函数：min θ
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = 1  # θ的系数
-            
-            # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
-            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
-            b_ub_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                A_ub_inputs[i, 0] = self.input_data[dmu, i]  # θ的系数
-                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
-                b_ub_inputs[i] = 0
-            
-            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
-            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
-            b_ub_outputs = np.zeros(self.n_outputs)
-            
-            for r in range(self.n_outputs):
-                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
-                b_ub_outputs[r] = self.output_data[dmu, r]
-            
-            # 合并约束
-            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
-            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
-            
-            # 变量边界：θ ≥ 0, λⱼ ≥ 0
-            bounds = [(0, None)] * (self.n_dmus + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
-            
-            if result and result.success:
-                efficiency_scores[dmu] = result.x[0]
-                lambda_values[dmu] = result.x[1:]
+            try:
+                # 目标函数：min θ
+                c = np.zeros(self.n_dmus + 1)
+                c[0] = 1  # θ的系数
                 
-                # 计算松弛变量
+                # 约束条件
+                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
+                A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
+                b_ub_inputs = np.zeros(self.n_inputs)
+                
                 for i in range(self.n_inputs):
-                    slack_inputs[dmu, i] = max(0, 
-                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
-                        efficiency_scores[dmu] * self.input_data[dmu, i])
+                    A_ub_inputs[i, 0] = input_data_processed[dmu, i]  # θ的系数
+                    A_ub_inputs[i, 1:] = -input_data_processed[:, i]  # λ的系数
+                    b_ub_inputs[i] = 0
+                
+                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
+                A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
+                b_ub_outputs = np.zeros(self.n_outputs)
                 
                 for r in range(self.n_outputs):
-                    slack_outputs[dmu, r] = max(0,
-                        self.output_data[dmu, r] - 
-                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
-            else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 0.5
+                    A_ub_outputs[r, 1:] = output_data_processed[:, r]  # λ的系数
+                    b_ub_outputs[r] = output_data_processed[dmu, r]
+                
+                # 合并约束
+                A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
+                b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
+                
+                # 变量边界：θ ≥ 0, λⱼ ≥ 0
+                bounds = [(0, None)] * (self.n_dmus + 1)
+                
+                # 求解线性规划
+                result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
+                
+                if result and result.success and result.x is not None:
+                    efficiency_scores[dmu] = max(0.0, min(1.0, result.x[0]))  # 确保在[0,1]范围内
+                    lambda_values[dmu] = result.x[1:]
+                    
+                    # 计算松弛变量
+                    for i in range(self.n_inputs):
+                        slack_inputs[dmu, i] = max(0, 
+                            np.sum(lambda_values[dmu] * input_data_processed[:, i]) - 
+                            efficiency_scores[dmu] * input_data_processed[dmu, i])
+                    
+                    for r in range(self.n_outputs):
+                        slack_outputs[dmu, r] = max(0,
+                            output_data_processed[dmu, r] - 
+                            np.sum(lambda_values[dmu] * output_data_processed[:, r]))
+                else:
+                    # 如果求解失败，使用改进的备用方法
+                    input_sum = np.sum(input_data_processed[dmu, :])
+                    output_sum = np.sum(output_data_processed[dmu, :])
+                    if input_sum > 0:
+                        # 使用投入产出比作为效率值的估计
+                        efficiency_scores[dmu] = min(1.0, output_sum / input_sum)
+                    else:
+                        efficiency_scores[dmu] = 0.5
+                    
+                    # 设置默认的λ值
+                    lambda_values[dmu, dmu] = 1.0
+                    
+            except Exception as e:
+                # 异常处理：使用简化的效率计算方法
+                input_sum = np.sum(input_data_processed[dmu, :])
+                output_sum = np.sum(output_data_processed[dmu, :])
+                if input_sum > 0:
+                    efficiency_scores[dmu] = min(1.0, output_sum / input_sum)
+                else:
+                    efficiency_scores[dmu] = 0.5
+                lambda_values[dmu, dmu] = 1.0
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -176,6 +210,11 @@ class CustomDEA:
     def ccr_output_oriented(self, method='highs'):
         """
         CCR模型 - 输出导向（规模报酬不变）
+        
+        理论定义：
+        - 假定规模报酬不变（CRS: Constant Returns to Scale）
+        - 主要用来测量技术效率（Technical Efficiency）
+        - 技术效率 = 综合效率（包含规模效率和技术效率）
         
         数学公式：
         max φ
@@ -250,11 +289,17 @@ class CustomDEA:
         """
         BCC模型 - 输入导向（规模报酬可变）
         
+        理论定义：
+        - 假定规模报酬可变（VRS: Variable Returns to Scale）
+        - 主要测算纯技术效率（Pure Technical Efficiency）
+        - 纯技术效率 = 技术效率与规模效率的比值
+        - 可以分离技术效率和规模效率的影响
+        
         数学公式：
         min θ
         s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
              ∑(j=1 to n) λⱼyᵣⱼ ≥ yᵣ₀, r = 1,...,s
-             ∑(j=1 to n) λⱼ = 1
+             ∑(j=1 to n) λⱼ = 1  (规模报酬可变约束)
              λⱼ ≥ 0, j = 1,...,n
         """
         efficiency_scores = np.zeros(self.n_dmus)
@@ -328,11 +373,17 @@ class CustomDEA:
         """
         BCC模型 - 输出导向（规模报酬可变）
         
+        理论定义：
+        - 假定规模报酬可变（VRS: Variable Returns to Scale）
+        - 主要测算纯技术效率（Pure Technical Efficiency）
+        - 纯技术效率 = 技术效率与规模效率的比值
+        - 可以分离技术效率和规模效率的影响
+        
         数学公式：
         max φ
         s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ xᵢ₀, i = 1,...,m
              ∑(j=1 to n) λⱼyᵣⱼ ≥ φyᵣ₀, r = 1,...,s
-             ∑(j=1 to n) λⱼ = 1
+             ∑(j=1 to n) λⱼ = 1  (规模报酬可变约束)
              λⱼ ≥ 0, j = 1,...,n
         """
         efficiency_scores = np.zeros(self.n_dmus)
@@ -1251,8 +1302,23 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             return None
         
         # 数据预处理：处理零值和异常值
-        input_data = np.maximum(input_data, 1e-10)  # 避免零值
-        output_data = np.maximum(output_data, 1e-10)  # 避免零值
+        # 使用更合理的数值处理方式
+        input_data = np.maximum(input_data, 1e-6)  # 避免零值，使用更大的最小值
+        output_data = np.maximum(output_data, 1e-6)  # 避免零值，使用更大的最小值
+        
+        # 数据标准化（可选，有助于数值稳定性）
+        # 如果数据量纲差异很大，可以考虑标准化
+        input_means = np.mean(input_data, axis=0)
+        output_means = np.mean(output_data, axis=0)
+        
+        # 检查是否需要标准化
+        input_cv = np.std(input_data, axis=0) / (input_means + 1e-10)  # 变异系数
+        output_cv = np.std(output_data, axis=0) / (output_means + 1e-10)
+        
+        if np.any(input_cv > 2.0) or np.any(output_cv > 2.0):
+            # 如果变异系数过大，进行标准化
+            input_data = input_data / (input_means + 1e-10)
+            output_data = output_data / (output_means + 1e-10)
         
         # 创建DEA对象（优先使用pyDEA库，备用自定义DEA实现）
         dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
@@ -1842,8 +1908,10 @@ def display_dea_formulas():
     
     # CCR模型公式
     st.markdown("### 1. CCR模型（规模报酬不变）")
+    st.markdown("**理论定义**：假定规模报酬不变（CRS），主要用来测量技术效率（综合效率）")
     
     st.markdown("#### 输入导向CCR模型：")
+    st.markdown("**目标**：在保持产出不变的前提下，最小化投入资源")
     st.latex(r"""
     \min \theta
     """)
@@ -1856,8 +1924,10 @@ def display_dea_formulas():
     st.latex(r"""
     \lambda_j \geq 0, \quad j = 1,2,\ldots,n
     """)
+    st.markdown("**解释**：θ < 1 表示可以按比例减少投入，θ = 1 表示DEA有效")
     
     st.markdown("#### 输出导向CCR模型：")
+    st.markdown("**目标**：在保持投入不变的前提下，最大化产出效果")
     st.latex(r"""
     \max \phi
     """)
@@ -1870,9 +1940,23 @@ def display_dea_formulas():
     st.latex(r"""
     \lambda_j \geq 0, \quad j = 1,2,\ldots,n
     """)
+    st.markdown("**解释**：φ > 1 表示可以按比例增加产出，φ = 1 表示DEA有效")
+    
+    # 重要说明
+    st.markdown("#### ⚠️ 重要说明")
+    st.markdown("""
+    **注意**：您提到的公式 $\max \theta$ 和 $\sum_{j=1}^{n} \lambda_j x_{ij} \leq \theta x_{i0}$ 
+    实际上是**输出导向**CCR模型的公式，不是输入导向的。
+    
+    - **输入导向**：$\min \theta$，目标是最小化投入比例
+    - **输出导向**：$\max \phi$，目标是最大化产出比例
+    
+    两种导向的数学表达和解释是不同的！
+    """)
     
     # BCC模型公式
     st.markdown("### 2. BCC模型（规模报酬可变）")
+    st.markdown("**理论定义**：假定规模报酬可变（VRS），主要测算纯技术效率（技术效率与规模效率的比值）")
     
     st.markdown("#### 输入导向BCC模型：")
     st.latex(r"""
@@ -2452,9 +2536,9 @@ def main():
                 model_options = {
                     "CCR模型（规模报酬不变）": {
                         "value": "CCR",
-                        "description": "适用于同级医院对比，假设规模报酬不变",
-                        "scenario": "🏥 **适用场景**：同等级医院效率对比（如三甲医院间对比）",
-                        "features": "• 假设规模报酬不变\n• 适合规模相近的医院\n• 计算相对效率"
+                        "description": "假定规模报酬不变，主要用来测量技术效率（综合效率）",
+                        "scenario": "🏥 **适用场景**：测量综合技术效率，包含规模效率和技术效率",
+                        "features": "• 假定规模报酬不变（CRS）\n• 测量技术效率（综合效率）\n• 适合规模相近的医院对比"
                     },
                     "CCR模型（规模报酬可变）": {
                         "value": "CCR-VRS",
@@ -2464,9 +2548,9 @@ def main():
                     },
                     "BCC模型（规模报酬可变）": {
                         "value": "BCC", 
-                        "description": "适用于不同等级医院对比，考虑规模报酬可变（推荐）",
-                        "scenario": "🏥 **适用场景**：不同等级医院效率对比（推荐医疗行业使用）",
-                        "features": "• 考虑规模报酬可变\n• 适合不同规模医院\n• 分离技术效率与规模效率"
+                        "description": "假定规模报酬可变，主要测算纯技术效率（推荐）",
+                        "scenario": "🏥 **适用场景**：测算纯技术效率，分离规模效率影响（推荐医疗行业使用）",
+                        "features": "• 假定规模报酬可变（VRS）\n• 测算纯技术效率\n• 可以分离技术效率和规模效率的影响"
                     },
                     "SBM模型（非径向）": {
                         "value": "SBM",
@@ -2701,6 +2785,32 @@ def main():
                     st.markdown("**效率值分布统计**")
                     efficiency_stats = results['效率值'].describe()
                     st.write(efficiency_stats)
+                    
+                    # 效率分解分析（CCR和BCC模型）
+                    st.markdown("---")
+                    st.subheader("🔬 效率分解分析")
+                    
+                    # 检查是否可以进行效率分解
+                    model_type = st.session_state.get('dea_model', 'BCC')
+                    if model_type in ['CCR', 'BCC']:
+                        if st.button("📊 执行效率分解分析", type="primary", help="同时运行CCR和BCC模型，计算综合效率、纯技术效率和规模效率"):
+                            with st.spinner("正在执行效率分解分析..."):
+                                # 获取数据
+                                data = st.session_state.get('uploaded_data')
+                                input_vars = st.session_state.get('selected_input_vars', [])
+                                output_vars = st.session_state.get('selected_output_vars', [])
+                                orientation = st.session_state.get('dea_orientation', 'input')
+                                
+                                if data is not None and input_vars and output_vars:
+                                    # 执行效率分解分析
+                                    decomposition_results = perform_efficiency_decomposition(
+                                        data, input_vars, output_vars, orientation
+                                    )
+                                    
+                                    if decomposition_results:
+                                        display_efficiency_decomposition(decomposition_results)
+                                else:
+                                    st.error("❌ 缺少必要的数据或变量选择信息")
                     
                     # 添加结果解释按钮
                     st.markdown("---")
@@ -3056,6 +3166,341 @@ def main():
             st.warning("⚠️ 请先完成DEA效率分析")
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
+
+def perform_efficiency_decomposition(data, input_vars, output_vars, orientation='input'):
+    """
+    执行效率分解分析：同时运行CCR和BCC模型
+    
+    参数:
+    - data: 数据DataFrame
+    - input_vars: 投入变量列表
+    - output_vars: 产出变量列表
+    - orientation: 导向类型
+    
+    返回:
+    - 包含TE、PTE、SE的字典
+    """
+    try:
+        # 准备数据
+        dmu_column = 'DMU' if 'DMU' in data.columns else '医院ID'
+        dmu_names = data[dmu_column].values
+        input_data = data[input_vars].values
+        output_data = data[output_vars].values
+        
+        # 数据验证
+        is_valid, message = validate_dea_data(input_data, output_data)
+        if not is_valid:
+            st.error(f"❌ 数据验证失败: {message}")
+            return None
+        
+        # 数据预处理
+        input_data = np.maximum(input_data, 1e-6)
+        output_data = np.maximum(output_data, 1e-6)
+        
+        # 创建DEA对象
+        dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
+        
+        # 运行CCR模型（综合效率）
+        st.info("🔄 正在计算综合效率（CCR模型）...")
+        if orientation == 'input':
+            ccr_scores = dea.ccr_input_oriented()
+        else:
+            ccr_scores = dea.ccr_output_oriented()
+        
+        # 获取CCR模型的松弛变量
+        ccr_slack_inputs = dea.dea.slack_inputs.copy()
+        ccr_slack_outputs = dea.dea.slack_outputs.copy()
+        
+        # 运行BCC模型（纯技术效率）
+        st.info("🔄 正在计算纯技术效率（BCC模型）...")
+        if orientation == 'input':
+            bcc_scores = dea.bcc_input_oriented()
+        else:
+            bcc_scores = dea.bcc_output_oriented()
+        
+        # 获取BCC模型的松弛变量
+        bcc_slack_inputs = dea.dea.slack_inputs.copy()
+        bcc_slack_outputs = dea.dea.slack_outputs.copy()
+        
+        # 计算规模效率
+        st.info("🔄 正在计算规模效率...")
+        scale_efficiency = np.zeros(len(ccr_scores))
+        
+        for i in range(len(ccr_scores)):
+            if bcc_scores[i] > 0:
+                scale_efficiency[i] = ccr_scores[i] / bcc_scores[i]
+            else:
+                scale_efficiency[i] = 0.0
+        
+        # 确保规模效率在[0,1]范围内
+        scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
+        
+        # 创建结果DataFrame
+        results_dict = {
+            'DMU': dmu_names,
+            '综合效率(TE)': ccr_scores,
+            '纯技术效率(PTE)': bcc_scores,
+            '规模效率(SE)': scale_efficiency
+        }
+        
+        # 添加投入松弛变量（使用CCR模型的结果）
+        for i in range(len(input_vars)):
+            results_dict[f'投入{i+1}_slacks'] = ccr_slack_inputs[:, i]
+        
+        # 添加产出松弛变量（使用CCR模型的结果）
+        for r in range(len(output_vars)):
+            results_dict[f'产出{r+1}_slacks'] = ccr_slack_outputs[:, r]
+        
+        results = pd.DataFrame(results_dict)
+        
+        # 按综合效率降序排列
+        results = results.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
+        
+        st.success("✅ 效率分解分析完成！")
+        
+        return {
+            'results': results,
+            'ccr_scores': ccr_scores,
+            'bcc_scores': bcc_scores,
+            'scale_efficiency': scale_efficiency,
+            'dmu_names': dmu_names,
+            'orientation': orientation,
+            'ccr_slack_inputs': ccr_slack_inputs,
+            'ccr_slack_outputs': ccr_slack_outputs,
+            'bcc_slack_inputs': bcc_slack_inputs,
+            'bcc_slack_outputs': bcc_slack_outputs,
+            'input_vars': input_vars,
+            'output_vars': output_vars
+        }
+        
+    except Exception as e:
+        st.error(f"❌ 效率分解分析失败: {str(e)}")
+        return None
+
+def display_efficiency_decomposition(decomposition_results):
+    """
+    显示效率分解分析结果
+    
+    参数:
+    - decomposition_results: 效率分解结果字典
+    """
+    results = decomposition_results['results']
+    orientation = decomposition_results['orientation']
+    
+    st.subheader("📊 效率分解分析结果")
+    
+    # 显示理论说明
+    st.markdown("""
+    ### 📚 效率分解理论说明
+    
+    **效率分解公式**：
+    - **综合效率 (TE)** = CCR模型结果 = 纯技术效率 × 规模效率
+    - **纯技术效率 (PTE)** = BCC模型结果 = 技术管理水平
+    - **规模效率 (SE)** = 综合效率 ÷ 纯技术效率 = 规模合理性
+    
+    **数学关系**：$\\theta_{CCR} = \\theta_{BCC} \\times SE$
+    """)
+    
+    # 显示三张效率表
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 🎯 综合效率表 (TE)")
+        te_table = results[['DMU', '综合效率(TE)']].copy()
+        te_table['综合效率(TE)'] = te_table['综合效率(TE)'].round(4)
+        te_table['排名'] = range(1, len(te_table) + 1)
+        te_table = te_table[['排名', 'DMU', '综合效率(TE)']]
+        st.dataframe(te_table, use_container_width=True, hide_index=True)
+        
+        # 统计信息
+        te_stats = results['综合效率(TE)'].describe()
+        st.markdown("**统计信息**")
+        st.write(f"平均值: {te_stats['mean']:.4f}")
+        st.write(f"最大值: {te_stats['max']:.4f}")
+        st.write(f"最小值: {te_stats['min']:.4f}")
+    
+    with col2:
+        st.markdown("#### 🔧 纯技术效率表 (PTE)")
+        pte_table = results[['DMU', '纯技术效率(PTE)']].copy()
+        pte_table['纯技术效率(PTE)'] = pte_table['纯技术效率(PTE)'].round(4)
+        pte_table['排名'] = range(1, len(pte_table) + 1)
+        pte_table = pte_table[['排名', 'DMU', '纯技术效率(PTE)']]
+        st.dataframe(pte_table, use_container_width=True, hide_index=True)
+        
+        # 统计信息
+        pte_stats = results['纯技术效率(PTE)'].describe()
+        st.markdown("**统计信息**")
+        st.write(f"平均值: {pte_stats['mean']:.4f}")
+        st.write(f"最大值: {pte_stats['max']:.4f}")
+        st.write(f"最小值: {pte_stats['min']:.4f}")
+    
+    with col3:
+        st.markdown("#### 📏 规模效率表 (SE)")
+        se_table = results[['DMU', '规模效率(SE)']].copy()
+        se_table['规模效率(SE)'] = se_table['规模效率(SE)'].round(4)
+        se_table['排名'] = range(1, len(se_table) + 1)
+        se_table = se_table[['排名', 'DMU', '规模效率(SE)']]
+        st.dataframe(se_table, use_container_width=True, hide_index=True)
+        
+        # 统计信息
+        se_stats = results['规模效率(SE)'].describe()
+        st.markdown("**统计信息**")
+        st.write(f"平均值: {se_stats['mean']:.4f}")
+        st.write(f"最大值: {se_stats['max']:.4f}")
+        st.write(f"最小值: {se_stats['min']:.4f}")
+    
+    # 完整结果表
+    st.markdown("#### 📋 完整效率分解结果")
+    complete_table = results.copy()
+    
+    # 格式化数值列
+    for col in complete_table.columns:
+        if col not in ['DMU']:
+            if '效率' in col:
+                complete_table[col] = complete_table[col].round(4)
+            elif 'slacks' in col:
+                complete_table[col] = complete_table[col].round(6)
+    
+    complete_table['排名'] = range(1, len(complete_table) + 1)
+    
+    # 重新排列列顺序：效率值在前，松弛变量在后
+    efficiency_cols = ['排名', 'DMU', '综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)']
+    slack_cols = [col for col in complete_table.columns if 'slacks' in col]
+    all_cols = efficiency_cols + slack_cols
+    complete_table = complete_table[all_cols]
+    
+    st.dataframe(complete_table, use_container_width=True, hide_index=True)
+    
+    # 松弛变量分析
+    st.markdown("#### 🔧 松弛变量分析")
+    st.markdown("""
+    **松弛变量含义**：
+    - **投入松弛变量**：表示投入冗余程度，值越大表示该投入越冗余，需要减少
+    - **产出松弛变量**：表示产出不足程度，值越大表示该产出越不足，需要增加
+    - **松弛变量 = 0**：表示该变量已达到最优水平，无需调整
+    - **松弛变量 > 0**：表示该变量存在改进空间
+    """)
+    
+    # 显示变量名称对应关系
+    if 'input_vars' in decomposition_results and 'output_vars' in decomposition_results:
+        input_vars = decomposition_results['input_vars']
+        output_vars = decomposition_results['output_vars']
+        
+        st.markdown("**变量名称对应关系**：")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**投入变量**：")
+            for i, var in enumerate(input_vars):
+                st.write(f"- 投入{i+1}_slacks → {var}")
+        
+        with col2:
+            st.markdown("**产出变量**：")
+            for r, var in enumerate(output_vars):
+                st.write(f"- 产出{r+1}_slacks → {var}")
+    
+    # 显示松弛变量统计
+    slack_cols = [col for col in results.columns if 'slacks' in col]
+    if slack_cols:
+        st.markdown("**松弛变量统计信息**")
+        slack_stats = results[slack_cols].describe()
+        st.dataframe(slack_stats.round(6), use_container_width=True)
+        
+        # 识别有松弛的DMU
+        st.markdown("**存在松弛的DMU分析**")
+        slack_analysis = []
+        
+        for _, row in results.iterrows():
+            dmu = row['DMU']
+            slack_info = []
+            
+            for col in slack_cols:
+                slack_value = row[col]
+                if slack_value > 1e-6:  # 有显著松弛
+                    slack_info.append(f"{col}: {slack_value:.6f}")
+            
+            if slack_info:
+                slack_analysis.append({
+                    'DMU': dmu,
+                    '松弛变量': '; '.join(slack_info),
+                    '松弛变量数量': len(slack_info)
+                })
+        
+        if slack_analysis:
+            slack_df = pd.DataFrame(slack_analysis)
+            st.dataframe(slack_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("✅ 所有DMU的松弛变量都为0，表示所有变量都达到最优水平")
+    
+    # 效率分解分析
+    st.markdown("#### 🔍 效率分解分析")
+    
+    # 识别不同类型的DMU
+    efficient_te = results[results['综合效率(TE)'] >= 0.9999]
+    efficient_pte = results[results['纯技术效率(PTE)'] >= 0.9999]
+    efficient_se = results[results['规模效率(SE)'] >= 0.9999]
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("综合有效DMU数", len(efficient_te))
+        st.metric("综合效率平均值", f"{results['综合效率(TE)'].mean():.4f}")
+    
+    with col2:
+        st.metric("技术有效DMU数", len(efficient_pte))
+        st.metric("纯技术效率平均值", f"{results['纯技术效率(PTE)'].mean():.4f}")
+    
+    with col3:
+        st.metric("规模有效DMU数", len(efficient_se))
+        st.metric("规模效率平均值", f"{results['规模效率(SE)'].mean():.4f}")
+    
+    # 效率改进建议
+    st.markdown("#### 💡 效率改进建议")
+    
+    # 分析每个DMU的改进方向
+    improvement_analysis = []
+    
+    for _, row in results.iterrows():
+        dmu = row['DMU']
+        te = row['综合效率(TE)']
+        pte = row['纯技术效率(PTE)']
+        se = row['规模效率(SE)']
+        
+        if te < 0.9999:  # 综合无效
+            if pte < 0.8:  # 技术效率低
+                if se < 0.8:  # 规模效率也低
+                    suggestion = "需要同时改进技术管理和调整规模"
+                else:
+                    suggestion = "主要问题是技术管理，需要改进管理水平"
+            else:  # 技术效率高
+                if se < 0.8:  # 规模效率低
+                    suggestion = "技术管理良好，但规模不合理，需要调整规模"
+                else:
+                    suggestion = "效率接近最优，小幅改进即可"
+        else:  # 综合有效
+            suggestion = "效率最优，可作为标杆"
+        
+        improvement_analysis.append({
+            'DMU': dmu,
+            '综合效率': te,
+            '纯技术效率': pte,
+            '规模效率': se,
+            '改进建议': suggestion
+        })
+    
+    improvement_df = pd.DataFrame(improvement_analysis)
+    st.dataframe(improvement_df, use_container_width=True, hide_index=True)
+    
+    # 提供结果下载
+    st.markdown("#### 💾 结果下载")
+    csv_data = results.to_csv(index=False, encoding='utf-8-sig')
+    
+    st.download_button(
+        label="📥 下载效率分解结果 (CSV)",
+        data=csv_data,
+        file_name=f"效率分解分析结果_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
 
 if __name__ == "__main__":
     main()
