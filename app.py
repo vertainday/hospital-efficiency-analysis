@@ -47,7 +47,7 @@ class CustomDEA:
         self.lambda_values = None
         
     def _solve_linear_program(self, c, A_ub, b_ub, A_eq, b_eq, bounds=None):
-        """求解线性规划问题 - 改进版本"""
+        """求解线性规划问题 - 详细调试版本"""
         from scipy.optimize import linprog
         
         # 尝试多种求解方法
@@ -66,10 +66,53 @@ class CustomDEA:
                     options={'maxiter': 1000}  # 增加最大迭代次数
                 )
                 
+                # 详细的状态信息
+                status_info = {
+                    'method': method,
+                    'success': result.success,
+                    'status': getattr(result, 'status', 'Unknown'),
+                    'message': getattr(result, 'message', 'No message'),
+                    'fun': getattr(result, 'fun', None),
+                    'x': getattr(result, 'x', None),
+                    'nit': getattr(result, 'nit', None),  # 迭代次数
+                    'slack': getattr(result, 'slack', None),  # 松弛变量
+                    'con': getattr(result, 'con', None)  # 约束违反
+                }
+                
+                print(f"🔍 求解器 {method} 详细信息:")
+                print(f"   ✅ 成功: {status_info['success']}")
+                print(f"   📊 状态码: {status_info['status']}")
+                print(f"   💬 消息: {status_info['message']}")
+                print(f"   🎯 目标值: {status_info['fun']}")
+                print(f"   🔢 迭代次数: {status_info['nit']}")
+                if status_info['x'] is not None:
+                    print(f"   📈 解向量: {status_info['x'][:3]}...")  # 只显示前3个元素
+                if status_info['slack'] is not None:
+                    print(f"   🔗 松弛变量: {status_info['slack'][:3]}...")
+                if status_info['con'] is not None:
+                    print(f"   ⚠️ 约束违反: {status_info['con'][:3]}...")
+                print()
+                
+                # 状态码解释
+                status_explanations = {
+                    0: "Optimal - 找到最优解",
+                    1: "Iteration limit reached - 达到迭代限制",
+                    2: "Infeasible - 问题无可行解",
+                    3: "Unbounded - 问题无界",
+                    4: "Numerical difficulties - 数值困难",
+                    5: "User interrupt - 用户中断",
+                    6: "Other error - 其他错误"
+                }
+                
+                if status_info['status'] in status_explanations:
+                    print(f"   📋 状态解释: {status_explanations[status_info['status']]}")
+                
                 if result.success and result.x is not None:
                     return result
                     
             except Exception as e:
+                print(f"❌ 方法 {method} 异常: {str(e)}")
+                print(f"   异常类型: {type(e).__name__}")
                 continue
         
         # 如果所有方法都失败，返回一个失败的结果对象
@@ -79,6 +122,7 @@ class CustomDEA:
                 self.message = "所有求解方法都失败"
                 self.x = None
                 self.fun = None
+                self.status = -1
         
         return FailedResult()
         
@@ -137,22 +181,22 @@ class CustomDEA:
                 c[0] = 1  # θ的系数
                 
                 # 约束条件
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
+                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀ 转换为 ∑λⱼxᵢⱼ - θxᵢ₀ ≤ 0
                 A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
                 b_ub_inputs = np.zeros(self.n_inputs)
                 
                 for i in range(self.n_inputs):
-                    A_ub_inputs[i, 0] = input_data_processed[dmu, i]  # θ的系数
-                    A_ub_inputs[i, 1:] = -input_data_processed[:, i]  # λ的系数
+                    A_ub_inputs[i, 0] = -input_data_processed[dmu, i]  # -θ的系数
+                    A_ub_inputs[i, 1:] = input_data_processed[:, i]    # λ的系数
                     b_ub_inputs[i] = 0
                 
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
+                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀ 转换为 -∑λⱼyᵣⱼ ≤ -yᵣ₀
                 A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
                 b_ub_outputs = np.zeros(self.n_outputs)
                 
                 for r in range(self.n_outputs):
-                    A_ub_outputs[r, 1:] = output_data_processed[:, r]  # λ的系数
-                    b_ub_outputs[r] = output_data_processed[dmu, r]
+                    A_ub_outputs[r, 1:] = -output_data_processed[:, r]  # -λ的系数
+                    b_ub_outputs[r] = -output_data_processed[dmu, r]    # -yᵣ₀
                 
                 # 合并约束
                 A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
@@ -179,27 +223,66 @@ class CustomDEA:
                             output_data_processed[dmu, r] - 
                             np.sum(lambda_values[dmu] * output_data_processed[:, r]))
                 else:
-                    # 如果求解失败，使用改进的备用方法
-                    input_sum = np.sum(input_data_processed[dmu, :])
-                    output_sum = np.sum(output_data_processed[dmu, :])
-                    if input_sum > 0:
-                        # 使用投入产出比作为效率值的估计
-                        efficiency_scores[dmu] = min(1.0, output_sum / input_sum)
-                    else:
-                        efficiency_scores[dmu] = 0.5
+                    # 如果求解失败，显示详细的错误信息
+                    print(f"❌ DMU {dmu} 线性规划求解失败!")
+                    print(f"   📊 状态码: {getattr(result, 'status', 'Unknown')}")
+                    print(f"   💬 错误消息: {getattr(result, 'message', 'No message')}")
+                    print(f"   🎯 目标值: {getattr(result, 'fun', 'None')}")
                     
-                    # 设置默认的λ值
-                    lambda_values[dmu, dmu] = 1.0
+                    # 状态码解释
+                    status_explanations = {
+                        0: "Optimal - 找到最优解",
+                        1: "Iteration limit reached - 达到迭代限制",
+                        2: "Infeasible - 问题无可行解",
+                        3: "Unbounded - 问题无界", 
+                        4: "Numerical difficulties - 数值困难",
+                        5: "User interrupt - 用户中断",
+                        6: "Other error - 其他错误"
+                    }
+                    
+                    status = getattr(result, 'status', -1)
+                    if status in status_explanations:
+                        print(f"   📋 问题类型: {status_explanations[status]}")
+                    
+                    # 分析可能的原因
+                    print(f"   🔍 可能原因分析:")
+                    if status == 2:  # Infeasible
+                        print(f"      - 约束条件过于严格，没有可行解")
+                        print(f"      - 检查投入产出数据是否合理")
+                        print(f"      - 可能存在数据异常或量纲问题")
+                    elif status == 3:  # Unbounded
+                        print(f"      - 目标函数可以无限优化")
+                        print(f"      - 检查约束条件是否完整")
+                    elif status == 4:  # Numerical difficulties
+                        print(f"      - 数值计算不稳定")
+                        print(f"      - 数据可能存在极值或量纲差异过大")
+                        print(f"      - 建议检查数据预处理")
+                    
+                    # 显示当前DMU的数据信息
+                    print(f"   📈 DMU {dmu} 数据信息:")
+                    print(f"      - 投入数据: {input_data_processed[dmu, :]}")
+                    print(f"      - 产出数据: {output_data_processed[dmu, :]}")
+                    print(f"      - 投入总和: {np.sum(input_data_processed[dmu, :]):.4f}")
+                    print(f"      - 产出总和: {np.sum(output_data_processed[dmu, :]):.4f}")
+                    
+                    # 不设置效率值，让用户看到真实的求解器问题
+                    efficiency_scores[dmu] = np.nan  # 使用NaN表示求解失败
+                    print(f"   ⚠️ 效率值设置为 NaN，表示求解失败")
+                    print()
                     
             except Exception as e:
-                # 异常处理：使用简化的效率计算方法
-                input_sum = np.sum(input_data_processed[dmu, :])
-                output_sum = np.sum(output_data_processed[dmu, :])
-                if input_sum > 0:
-                    efficiency_scores[dmu] = min(1.0, output_sum / input_sum)
-                else:
-                    efficiency_scores[dmu] = 0.5
-                lambda_values[dmu, dmu] = 1.0
+                # 异常处理：显示详细的异常信息
+                print(f"❌ DMU {dmu} 发生异常!")
+                print(f"   🚨 异常类型: {type(e).__name__}")
+                print(f"   💬 异常消息: {str(e)}")
+                print(f"   📈 DMU {dmu} 数据信息:")
+                print(f"      - 投入数据: {input_data_processed[dmu, :]}")
+                print(f"      - 产出数据: {output_data_processed[dmu, :]}")
+                print(f"   ⚠️ 效率值设置为 NaN，表示计算异常")
+                print()
+                
+                # 不设置效率值，让用户看到真实的异常问题
+                efficiency_scores[dmu] = np.nan  # 使用NaN表示计算异常
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -233,21 +316,21 @@ class CustomDEA:
             c[0] = -1  # φ的系数（负号因为求最大值）
             
             # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀
+            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀ 转换为 ∑λⱼxᵢⱼ - xᵢ₀ ≤ 0
             A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
             b_ub_inputs = np.zeros(self.n_inputs)
             
             for i in range(self.n_inputs):
-                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
-                b_ub_inputs[i] = -self.input_data[dmu, i]
-            
-            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀
+                A_ub_inputs[i, 1:] = self.input_data[:, i]    # λ的系数
+                b_ub_inputs[i] = self.input_data[dmu, i]     # xᵢ₀
+                
+            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀ 转换为 -∑λⱼyᵣⱼ + φyᵣ₀ ≤ 0
             A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
             b_ub_outputs = np.zeros(self.n_outputs)
             
             for r in range(self.n_outputs):
-                A_ub_outputs[r, 0] = -self.output_data[dmu, r]  # φ的系数
-                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                A_ub_outputs[r, 0] = self.output_data[dmu, r]   # φ的系数
+                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λ的系数
                 b_ub_outputs[r] = 0
             
             # 合并约束
@@ -1331,14 +1414,6 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 efficiency_scores = dea.ccr_output_oriented()
             else:
                 raise ValueError(f"不支持的导向类型: {orientation}")
-        elif model_type == 'CCR-VRS':
-            # CCR-VRS模型实际上就是BCC模型
-            if orientation == 'input':
-                efficiency_scores = dea.bcc_input_oriented()
-            elif orientation == 'output':
-                efficiency_scores = dea.bcc_output_oriented()
-            else:
-                raise ValueError(f"不支持的导向类型: {orientation}")
         elif model_type == 'BCC':
             if orientation == 'input':
                 efficiency_scores = dea.bcc_input_oriented()
@@ -1367,15 +1442,24 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         if not isinstance(efficiency_scores, np.ndarray):
             efficiency_scores = np.array(efficiency_scores)
         
-        # 效率值后处理：确保在[0,1]范围内
-        efficiency_scores = np.clip(efficiency_scores, 0.0, 1.0)
+        # 检查是否有NaN值（求解失败）
+        nan_count = np.sum(np.isnan(efficiency_scores))
+        if nan_count > 0:
+            st.error(f"❌ 有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
+            st.info("💡 请查看控制台输出获取详细的求解器错误信息")
+            st.info("🔍 常见问题：数据异常、约束条件过严、数值不稳定等")
         
-        # 检查是否有异常的效率值
-        if np.any(efficiency_scores > 1.0):
-            st.warning("⚠️ 检测到效率值大于1，已自动修正为1.0")
-        
-        if np.any(efficiency_scores < 0.0):
-            st.warning("⚠️ 检测到效率值小于0，已自动修正为0.0")
+        # 效率值后处理：确保在[0,1]范围内（排除NaN值）
+        valid_mask = ~np.isnan(efficiency_scores)
+        if np.any(valid_mask):
+            valid_scores = efficiency_scores[valid_mask]
+            if np.any(valid_scores > 1.0):
+                st.warning("⚠️ 检测到效率值大于1，已自动修正为1.0")
+            if np.any(valid_scores < 0.0):
+                st.warning("⚠️ 检测到效率值小于0，已自动修正为0.0")
+            
+            # 只对有效值进行裁剪
+            efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
         
         # 创建结果DataFrame
         results = pd.DataFrame({
@@ -2540,12 +2624,6 @@ def main():
                         "scenario": "🏥 **适用场景**：测量综合技术效率，包含规模效率和技术效率",
                         "features": "• 假定规模报酬不变（CRS）\n• 测量技术效率（综合效率）\n• 适合规模相近的医院对比"
                     },
-                    "CCR模型（规模报酬可变）": {
-                        "value": "CCR-VRS",
-                        "description": "CCR模型的规模报酬可变版本，考虑规模效应",
-                        "scenario": "🏥 **适用场景**：不同规模医院对比，考虑规模报酬可变",
-                        "features": "• 考虑规模报酬可变\n• 适合不同规模医院\n• 分离技术效率与规模效率"
-                    },
                     "BCC模型（规模报酬可变）": {
                         "value": "BCC", 
                         "description": "假定规模报酬可变，主要测算纯技术效率（推荐）",
@@ -2579,9 +2657,9 @@ def main():
                 st.info(f"💡 {model_info['description']}")
                 st.markdown(f"**模型特点：**\n{model_info['features']}")
                 
-                # 导向选择（仅对CCR、CCR-VRS和BCC模型显示）
+                # 导向选择（仅对CCR和BCC模型显示）
                 orientation = 'input'  # 默认值
-                if model_info['value'] in ['CCR', 'CCR-VRS', 'BCC']:
+                if model_info['value'] in ['CCR', 'BCC']:
                     st.markdown("**📐 选择分析导向**")
                     orientation_options = {
                         "输入导向（推荐）": {
