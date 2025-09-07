@@ -396,22 +396,23 @@ class CustomDEA:
             c[0] = 1  # θ的系数
             
             # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀
+            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀ 转换为 ∑λⱼxᵢⱼ - θxᵢ₀ ≤ 0
             A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
             b_ub_inputs = np.zeros(self.n_inputs)
             
             for i in range(self.n_inputs):
-                A_ub_inputs[i, 0] = self.input_data[dmu, i]  # θ的系数
-                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
+                A_ub_inputs[i, 0] = -self.input_data[dmu, i]  # -θxᵢ₀的系数
+                A_ub_inputs[i, 1:] = self.input_data[:, i]   # λⱼxᵢⱼ的系数
                 b_ub_inputs[i] = 0
             
-            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀
+            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀ 转换为 -∑λⱼyᵣⱼ ≤ -yᵣ₀
             A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
             b_ub_outputs = np.zeros(self.n_outputs)
             
             for r in range(self.n_outputs):
-                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
-                b_ub_outputs[r] = self.output_data[dmu, r]
+                A_ub_outputs[r, 0] = 0  # θ的系数为0
+                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λⱼyᵣⱼ的系数
+                b_ub_outputs[r] = -self.output_data[dmu, r]   # -yᵣ₀
             
             # 规模报酬可变约束：∑λⱼ = 1
             A_eq = np.zeros((1, self.n_dmus + 1))
@@ -480,21 +481,22 @@ class CustomDEA:
             c[0] = -1  # φ的系数（负号因为求最大值）
             
             # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀
+            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀ 转换为 ∑λⱼxᵢⱼ - xᵢ₀ ≤ 0
             A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
             b_ub_inputs = np.zeros(self.n_inputs)
             
             for i in range(self.n_inputs):
-                A_ub_inputs[i, 1:] = -self.input_data[:, i]  # λ的系数
-                b_ub_inputs[i] = -self.input_data[dmu, i]
+                A_ub_inputs[i, 0] = 0  # φ的系数为0
+                A_ub_inputs[i, 1:] = self.input_data[:, i]   # λⱼxᵢⱼ的系数
+                b_ub_inputs[i] = self.input_data[dmu, i]     # xᵢ₀
             
-            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀
+            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀ 转换为 -∑λⱼyᵣⱼ + φyᵣ₀ ≤ 0
             A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
             b_ub_outputs = np.zeros(self.n_outputs)
             
             for r in range(self.n_outputs):
-                A_ub_outputs[r, 0] = -self.output_data[dmu, r]  # φ的系数
-                A_ub_outputs[r, 1:] = self.output_data[:, r]  # λ的系数
+                A_ub_outputs[r, 0] = self.output_data[dmu, r]  # φyᵣ₀的系数
+                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λⱼyᵣⱼ的系数
                 b_ub_outputs[r] = 0
             
             # 规模报酬可变约束：∑λⱼ = 1
@@ -2860,46 +2862,103 @@ def main():
                     # 显示结果
                     st.subheader("📊 效率分析结果")
 
-                    # 显示效率值表格
-                    st.markdown("**效率值排名（按效率值降序排列）**")
-                    try:
-                        results_display = results.copy()
-                    except Exception as e:
-                        st.error(f"结果数据复制失败: {e}")
-                        results_display = results
-                    
-                    # 按效率值降序排序
-                    results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                    results_display['效率值'] = results_display['效率值'].round(3)
-                    results_display['排名'] = range(1, len(results_display) + 1)
-                    
-                    # 重新排列列顺序
-                    results_display = results_display[['排名', 'DMU', '效率值']]
-                    
-                    # 应用蓝色渐变背景样式
-                    st.markdown("""
-                    <style>
-                    .efficiency-table {
-                        background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
-                        border-radius: 10px;
-                        padding: 1rem;
-                        margin: 1rem 0;
-                        box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
-                    st.dataframe(
-                        results_display,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    # 检查是否有效率分解结果
+                    if 'decomposition_results' in st.session_state:
+                        # 如果有效率分解结果，显示三种效率值
+                        decomposition_results = st.session_state['decomposition_results']
+                        results_display = decomposition_results['results'].copy()
+                        
+                        st.markdown("**效率值排名（按综合效率降序排列）**")
+                        
+                        # 按综合效率降序排序
+                        results_display = results_display.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
+                        
+                        # 格式化效率值
+                        results_display['综合效率(TE)'] = results_display['综合效率(TE)'].round(4)
+                        results_display['纯技术效率(PTE)'] = results_display['纯技术效率(PTE)'].round(4)
+                        results_display['规模效率(SE)'] = results_display['规模效率(SE)'].round(4)
+                        results_display['排名'] = range(1, len(results_display) + 1)
+                        
+                        # 重新排列列顺序
+                        results_display = results_display[['排名', 'DMU', '综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)']]
+                        
+                        # 应用蓝色渐变背景样式
+                        st.markdown("""
+                        <style>
+                        .efficiency-table {
+                            background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
+                            border-radius: 10px;
+                            padding: 1rem;
+                            margin: 1rem 0;
+                            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+                        }
+                        </style>
+                        """, unsafe_allow_html=True)
+                        
+                        st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
+                        st.dataframe(
+                            results_display,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # 显示效率分解说明
+                        st.info("""
+                        📚 **效率分解说明**：
+                        - **综合效率(TE)**：CCR模型结果，反映整体效率水平
+                        - **纯技术效率(PTE)**：BCC模型结果，反映技术管理水平
+                        - **规模效率(SE)**：综合效率÷纯技术效率，反映规模合理性
+                        """)
+                        
+                    else:
+                        # 如果没有效率分解结果，显示单一效率值
+                        st.markdown("**效率值排名（按效率值降序排列）**")
+                        try:
+                            results_display = results.copy()
+                        except Exception as e:
+                            st.error(f"结果数据复制失败: {e}")
+                            results_display = results
+                        
+                        # 按效率值降序排序
+                        results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                        results_display['效率值'] = results_display['效率值'].round(3)
+                        results_display['排名'] = range(1, len(results_display) + 1)
+                        
+                        # 重新排列列顺序
+                        results_display = results_display[['排名', 'DMU', '效率值']]
+                        
+                        # 应用蓝色渐变背景样式
+                        st.markdown("""
+                        <style>
+                        .efficiency-table {
+                            background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
+                            border-radius: 10px;
+                            padding: 1rem;
+                            margin: 1rem 0;
+                            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+                        }
+                        </style>
+                        """, unsafe_allow_html=True)
+                        
+                        st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
+                        st.dataframe(
+                            results_display,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
                     
                     # 高亮最优DMU
-                    best_dmu = results.iloc[0]
-                    st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (效率值: {best_dmu['效率值']:.3f})")
+                    if 'decomposition_results' in st.session_state:
+                        # 如果有效率分解结果，显示综合效率最高的DMU
+                        decomposition_results = st.session_state['decomposition_results']
+                        best_dmu = decomposition_results['results'].iloc[0]
+                        st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (综合效率: {best_dmu['综合效率(TE)']:.4f})")
+                    else:
+                        # 如果没有效率分解结果，显示单一效率值最高的DMU
+                        best_dmu = results.iloc[0]
+                        st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (效率值: {best_dmu['效率值']:.3f})")
                     
                     # 创建效率排名图表
                     st.subheader("📈 效率排名可视化")
@@ -2919,23 +2978,65 @@ def main():
                     
                     # 分析摘要
                     st.subheader("📋 分析摘要")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric("分析医院数", len(results))
-                    
-                    with col2:
-                        efficient_count = len(results[results['效率值'] >= 0.9999])
-                        st.metric("有效医院数", efficient_count)
-                    
-                    with col3:
-                        avg_efficiency = results['效率值'].mean()
-                        st.metric("平均效率值", f"{avg_efficiency:.3f}")
+                    if 'decomposition_results' in st.session_state:
+                        # 如果有效率分解结果，显示三种效率的指标
+                        decomposition_results = st.session_state['decomposition_results']
+                        results_for_metrics = decomposition_results['results']
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("分析医院数", len(results_for_metrics))
+                        
+                        with col2:
+                            te_efficient_count = len(results_for_metrics[results_for_metrics['综合效率(TE)'] >= 0.9999])
+                            st.metric("综合有效医院数", te_efficient_count)
+                        
+                        with col3:
+                            avg_te = results_for_metrics['综合效率(TE)'].mean()
+                            st.metric("平均综合效率", f"{avg_te:.4f}")
+                    else:
+                        # 如果没有效率分解结果，显示单一效率值指标
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("分析医院数", len(results))
+                        
+                        with col2:
+                            efficient_count = len(results[results['效率值'] >= 0.9999])
+                            st.metric("有效医院数", efficient_count)
+                        
+                        with col3:
+                            avg_efficiency = results['效率值'].mean()
+                            st.metric("平均效率值", f"{avg_efficiency:.3f}")
                     
                     # 效率分布统计
                     st.markdown("**效率值分布统计**")
-                    efficiency_stats = results['效率值'].describe()
-                    st.write(efficiency_stats)
+                    if 'decomposition_results' in st.session_state:
+                        # 如果有效率分解结果，显示三种效率的统计信息
+                        decomposition_results = st.session_state['decomposition_results']
+                        results_for_stats = decomposition_results['results']
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.markdown("**综合效率(TE)统计**")
+                            te_stats = results_for_stats['综合效率(TE)'].describe()
+                            st.write(te_stats)
+                        
+                        with col2:
+                            st.markdown("**纯技术效率(PTE)统计**")
+                            pte_stats = results_for_stats['纯技术效率(PTE)'].describe()
+                            st.write(pte_stats)
+                        
+                        with col3:
+                            st.markdown("**规模效率(SE)统计**")
+                            se_stats = results_for_stats['规模效率(SE)'].describe()
+                            st.write(se_stats)
+                    else:
+                        # 如果没有效率分解结果，显示单一效率值统计
+                        efficiency_stats = results['效率值'].describe()
+                        st.write(efficiency_stats)
                     
                     # 效率分解分析（CCR和BCC模型）
                     st.markdown("---")
@@ -2959,7 +3060,14 @@ def main():
                                     )
                                     
                                     if decomposition_results:
+                                        # 将效率分解结果保存到session_state中
+                                        st.session_state['decomposition_results'] = decomposition_results
+                                        
+                                        # 显示效率分解分析结果
                                         display_efficiency_decomposition(decomposition_results)
+                                        
+                                        # 提示用户刷新页面查看更新后的排名表格
+                                        st.success("✅ 效率分解分析完成！排名表格已更新，显示三种效率值。")
                                 else:
                                     st.error("❌ 缺少必要的数据或变量选择信息")
                     
