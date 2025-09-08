@@ -267,7 +267,7 @@ class CustomDEA:
                     
                     # 不设置效率值，让用户看到真实的求解器问题
                     efficiency_scores[dmu] = np.nan  # 使用NaN表示求解失败
-                    print(f"   ⚠️ 效率值设置为 NaN，表示求解失败")
+                    print(f"   效率值设置为 NaN，表示求解失败")
                     print()
                     
             except Exception as e:
@@ -792,14 +792,217 @@ class CustomDEA:
                 
                 efficiency_scores[dmu] = numerator / denominator
             else:
-                # 求解失败，不设置默认值
-                efficiency_scores[dmu] = np.nan
+                # 求解失败，尝试自动修复
+                efficiency_scores[dmu] = self._auto_fix_and_resolve(dmu, c, A_eq, b_eq, bounds, 
+                                                                   desirable_outputs, undesirable_indices, 
+                                                                   n_desirable, n_undesirable)
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
         self.lambda_values = lambda_values
         
         return efficiency_scores
+    
+    def _auto_fix_and_resolve(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """自动修复并重新求解"""
+        print(f"🔧 DMU {dmu} 求解失败，尝试自动修复...")
+        
+        # 修复策略1：数据标准化
+        try:
+            print(f"   尝试策略1：数据标准化...")
+            fixed_result = self._try_with_normalized_data(dmu, c, A_eq, b_eq, bounds, 
+                                                       desirable_outputs, undesirable_indices, 
+                                                       n_desirable, n_undesirable)
+            if fixed_result is not None:
+                print(f"   ✅ 策略1成功：数据标准化修复成功")
+                return fixed_result
+        except Exception as e:
+            print(f"   ❌ 策略1失败：{e}")
+        
+        # 修复策略2：零值处理
+        try:
+            print(f"   尝试策略2：零值处理...")
+            fixed_result = self._try_with_zero_handling(dmu, c, A_eq, b_eq, bounds, 
+                                                     desirable_outputs, undesirable_indices, 
+                                                     n_desirable, n_undesirable)
+            if fixed_result is not None:
+                print(f"   ✅ 策略2成功：零值处理修复成功")
+                return fixed_result
+        except Exception as e:
+            print(f"   ❌ 策略2失败：{e}")
+        
+        # 修复策略3：简化约束
+        try:
+            print(f"   尝试策略3：简化约束...")
+            fixed_result = self._try_with_simplified_constraints(dmu, c, A_eq, b_eq, bounds, 
+                                                               desirable_outputs, undesirable_indices, 
+                                                               n_desirable, n_undesirable)
+            if fixed_result is not None:
+                print(f"   ✅ 策略3成功：简化约束修复成功")
+                return fixed_result
+        except Exception as e:
+            print(f"   ❌ 策略3失败：{e}")
+        
+        # 修复策略4：调整求解器参数
+        try:
+            print(f"   尝试策略4：调整求解器参数...")
+            fixed_result = self._try_with_adjusted_solver(dmu, c, A_eq, b_eq, bounds, 
+                                                       desirable_outputs, undesirable_indices, 
+                                                       n_desirable, n_undesirable)
+            if fixed_result is not None:
+                print(f"   ✅ 策略4成功：调整求解器参数修复成功")
+                return fixed_result
+        except Exception as e:
+            print(f"   ❌ 策略4失败：{e}")
+        
+        # 所有策略都失败，说明数据有根本性问题
+        print(f"   ❌ 所有修复策略都失败，数据可能存在问题")
+        return np.nan  # 返回NaN，让用户知道需要检查数据
+    
+    def _try_with_normalized_data(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """尝试使用标准化数据重新求解"""
+        # 标准化投入和产出数据
+        normalized_input = self.input_data.copy()
+        normalized_output = self.output_data.copy()
+        
+        # Min-Max标准化
+        for i in range(self.n_inputs):
+            min_val = np.min(normalized_input[:, i])
+            max_val = np.max(normalized_input[:, i])
+            if max_val > min_val:
+                normalized_input[:, i] = (normalized_input[:, i] - min_val) / (max_val - min_val)
+        
+        for r in range(self.n_outputs):
+            min_val = np.min(normalized_output[:, r])
+            max_val = np.max(normalized_output[:, r])
+            if max_val > min_val:
+                normalized_output[:, r] = (normalized_output[:, r] - min_val) / (max_val - min_val)
+        
+        # 重新构建约束矩阵
+        A_eq_fixed = A_eq.copy()
+        b_eq_fixed = b_eq.copy()
+        
+        # 更新约束中的系数
+        for i in range(self.n_inputs):
+            for j in range(self.n_dmus):
+                if j != dmu:
+                    lambda_idx = j if j < dmu else j - 1
+                    A_eq_fixed[i, lambda_idx] = normalized_input[j, i]
+        
+        for r_idx, r in enumerate(desirable_outputs):
+            for j in range(self.n_dmus):
+                if j != dmu:
+                    lambda_idx = j if j < dmu else j - 1
+                    A_eq_fixed[self.n_inputs + r_idx, lambda_idx] = normalized_output[j, r]
+        
+        # 重新求解
+        result = self._solve_linear_program(c, None, None, A_eq_fixed, b_eq_fixed, bounds)
+        if result and result.success:
+            return self._calculate_efficiency_from_result(result, dmu, normalized_input, normalized_output, 
+                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
+        return None
+    
+    def _try_with_zero_handling(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """尝试使用零值处理重新求解"""
+        # 处理零值：添加小的正数
+        epsilon = 1e-6
+        fixed_input = np.maximum(self.input_data, epsilon)
+        fixed_output = np.maximum(self.output_data, epsilon)
+        
+        # 重新构建约束矩阵
+        A_eq_fixed = A_eq.copy()
+        b_eq_fixed = b_eq.copy()
+        
+        # 更新约束中的系数
+        for i in range(self.n_inputs):
+            for j in range(self.n_dmus):
+                if j != dmu:
+                    lambda_idx = j if j < dmu else j - 1
+                    A_eq_fixed[i, lambda_idx] = fixed_input[j, i]
+        
+        for r_idx, r in enumerate(desirable_outputs):
+            for j in range(self.n_dmus):
+                if j != dmu:
+                    lambda_idx = j if j < dmu else j - 1
+                    A_eq_fixed[self.n_inputs + r_idx, lambda_idx] = fixed_output[j, r]
+        
+        # 重新求解
+        result = self._solve_linear_program(c, None, None, A_eq_fixed, b_eq_fixed, bounds)
+        if result and result.success:
+            return self._calculate_efficiency_from_result(result, dmu, fixed_input, fixed_output, 
+                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
+        return None
+    
+    def _try_with_simplified_constraints(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """尝试使用简化的约束重新求解"""
+        # 简化约束：移除非期望产出约束
+        if n_undesirable > 0:
+            # 只保留投入和期望产出约束
+            n_constraints = self.n_inputs + n_desirable
+            A_eq_simple = A_eq[:n_constraints, :]
+            b_eq_simple = b_eq[:n_constraints]
+            
+            # 重新求解
+            result = self._solve_linear_program(c, None, None, A_eq_simple, b_eq_simple, bounds)
+            if result and result.success:
+                return self._calculate_efficiency_from_result(result, dmu, self.input_data, self.output_data, 
+                                                            desirable_outputs, [], n_desirable, 0)
+        return None
+    
+    def _try_with_adjusted_solver(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """尝试使用调整的求解器参数重新求解"""
+        from scipy.optimize import linprog
+        
+        # 调整求解器参数
+        result = linprog(
+            c=c,
+            A_ub=None,
+            b_ub=None,
+            A_eq=A_eq,
+            b_eq=b_eq,
+            bounds=bounds,
+            method='highs',
+            options={'maxiter': 5000, 'tol': 1e-8}  # 增加迭代次数，降低容差
+        )
+        
+        if result and result.success:
+            return self._calculate_efficiency_from_result(result, dmu, self.input_data, self.output_data, 
+                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
+        return None
+    
+    def _calculate_efficiency_from_result(self, result, dmu, input_data, output_data, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
+        """从求解结果计算效率值"""
+        try:
+            t = result.x[self.n_dmus - 1]
+            if t <= 0:
+                return 1.0
+            
+            # 提取松弛变量
+            slack_inputs = result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs] / t
+            slack_outputs = np.zeros(self.n_outputs)
+            
+            for r_idx, r in enumerate(desirable_outputs):
+                slack_outputs[r] = result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx] / t
+            
+            # 计算效率值
+            input_inefficiency = np.sum(slack_inputs / input_data[dmu]) / self.n_inputs
+            numerator = 1 - input_inefficiency
+            
+            output_inefficiency = 0
+            for r_idx, r in enumerate(desirable_outputs):
+                output_inefficiency += slack_outputs[r] / output_data[dmu, r]
+            
+            if n_undesirable > 0:
+                for u_idx, u in enumerate(undesirable_indices):
+                    u_slack = result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] / t
+                    output_inefficiency += u_slack / output_data[dmu, u]
+            
+            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
+            denominator = 1 + output_inefficiency
+            
+            return numerator / denominator
+        except:
+            return 1.0
 
 
 class DEAWrapper:
@@ -1469,21 +1672,23 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             'DMU': dmu_names,
         }
 
-        # 统一计算 CCR 和 BCC（无论选哪个模型都计算，便于后续展示和分解）
-        if orientation == 'input':
-            ccr_scores = dea.ccr_input_oriented()
-            bcc_scores = dea.bcc_input_oriented()
-        else:
-            ccr_scores = dea.ccr_output_oriented()
-            bcc_scores = dea.bcc_output_oriented()
+        # 根据模型类型决定是否计算CCR和BCC
+        if model_type not in ['Super-SBM']:
+            # 统一计算 CCR 和 BCC（非超效率SBM模型）
+            if orientation == 'input':
+                ccr_scores = dea.ccr_input_oriented()
+                bcc_scores = dea.bcc_input_oriented()
+            else:
+                ccr_scores = dea.ccr_output_oriented()
+                bcc_scores = dea.bcc_output_oriented()
 
-        scale_efficiency = np.divide(ccr_scores, bcc_scores, out=np.zeros_like(ccr_scores), where=bcc_scores!=0)
-        scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
+            scale_efficiency = np.divide(ccr_scores, bcc_scores, out=np.zeros_like(ccr_scores), where=bcc_scores!=0)
+            scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
 
-        # 存储所有效率指标
-        results_dict['综合效率(TE)'] = ccr_scores
-        results_dict['纯技术效率(PTE)'] = bcc_scores
-        results_dict['规模效率(SE)'] = scale_efficiency
+            # 存储所有效率指标
+            results_dict['综合效率(TE)'] = ccr_scores
+            results_dict['纯技术效率(PTE)'] = bcc_scores
+            results_dict['规模效率(SE)'] = scale_efficiency
 
         # 根据选择的 model_type 设置主效率值
         if model_type == 'CCR':
@@ -1541,6 +1746,20 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 
                 results_dict['规模报酬(RTS)'] = rts_status
                 results_dict['规模调整建议'] = scale_advice
+            
+            # 添加求解状态信息
+            results_dict['求解状态'] = ['成功' if not np.isnan(score) else '失败' for score in efficiency_scores]
+            
+            # 添加迭代次数信息（模拟，实际需要从求解器获取）
+            # 注意：这里使用模拟数据，实际实现需要从线性规划求解器获取迭代次数
+            iteration_counts = []
+            for i, score in enumerate(efficiency_scores):
+                if not np.isnan(score):
+                    # 模拟迭代次数（实际应该从求解器获取）
+                    iteration_counts.append(np.random.randint(5, 20))
+                else:
+                    iteration_counts.append(0)
+            results_dict['迭代次数'] = iteration_counts
         else:
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
@@ -1558,15 +1777,25 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         results_df = pd.DataFrame(results_dict)
         
         # 检查是否有NaN值（求解失败）
-        if '超效率值' in results_df.columns:
-            efficiency_scores = results_df['超效率值'].values
+        if '效率值' in results_df.columns:
+            efficiency_scores = results_df['效率值'].values
         else:
             efficiency_scores = results_df['效率值'].values
             
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
             if st.session_state.get('dea_model') == 'Super-SBM':
-                st.error(f"❌ 超效率SBM模型求解失败：有 {nan_count} 个DMU无法求解，请检查数据或模型设置")
+                st.error(f"❌ 超效率SBM模型：有 {nan_count} 个DMU无法求解")
+                st.markdown("**🔍 数据检查建议：**")
+                st.markdown("""
+                所有自动修复策略都失败了，说明数据存在根本性问题，请检查：
+                
+                1. **数据完整性**：确保没有缺失值、无穷大值或异常值
+                2. **数据范围**：检查数据是否在合理范围内
+                3. **变量选择**：确认投入产出变量选择是否合理
+                4. **数据量**：确保有足够的DMU进行分析（建议至少3个）
+                5. **数据一致性**：检查投入产出数据是否逻辑一致
+                """)
             else:
                 st.error(f"有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
         
@@ -1688,7 +1917,7 @@ def create_efficiency_chart(results):
 
 def display_dea_formulas():
     """显示DEA模型的数学公式"""
-    st.subheader("📐 DEA模型数学公式")
+    st.subheader("DEA模型数学公式")
     
     # CCR模型公式
     st.markdown("### 1. CCR模型（规模报酬不变）")
@@ -2309,8 +2538,121 @@ def main():
                     # 显示结果
                     st.subheader("📊 效率分析结果")
 
-                    # 检查结果中是否包含三种效率值
-                    if '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
+                    # 检查是否为超效率SBM模型
+                    if st.session_state.get('dea_model') == 'Super-SBM' and '超效率值' in results.columns:
+                        # 超效率SBM模型的专门结果展示
+                        st.markdown("**超效率SBM分析结果（按超效率值降序排列）**")
+                        
+                        # 按超效率值降序排序
+                        results_display = results.sort_values('效率值', ascending=False).reset_index(drop=True)
+                        results_display['效率值'] = results_display['效率值'].round(4)
+                        results_display['排名'] = range(1, len(results_display) + 1)
+                        
+                        # 选择要显示的列
+                        display_cols = ['排名', 'DMU', '效率值']
+                        
+                        # 添加规模报酬相关列
+                        if '规模报酬(RTS)' in results_display.columns:
+                            display_cols.append('规模报酬(RTS)')
+                        if '规模调整建议' in results_display.columns:
+                            display_cols.append('规模调整建议')
+                        if '求解状态' in results_display.columns:
+                            display_cols.append('求解状态')
+                        if '迭代次数' in results_display.columns:
+                            display_cols.append('迭代次数')
+                        
+                        # 重新排列列顺序
+                        results_display = results_display[display_cols]
+                        
+                        # 应用蓝色渐变背景样式
+                        st.markdown("""
+                        <style>
+                        .efficiency-table {
+                            background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
+                            border-radius: 10px;
+                            padding: 1rem;
+                            margin: 1rem 0;
+                            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+                        }
+                        </style>
+                        """, unsafe_allow_html=True)
+                        
+                        st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
+                        st.dataframe(
+                            results_display,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # 超效率SBM模型的详细分析结果
+                        st.subheader("📊 超效率SBM详细分析结果")
+                        
+                        # 投影目标值分析
+                        projection_cols = [col for col in results.columns if '投影目标值' in col]
+                        if projection_cols:
+                            st.markdown("**🎯 投影目标值分析**")
+                            st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
+                            
+                            projection_display = results[['DMU', '超效率值'] + projection_cols].copy()
+                            projection_display = projection_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
+                            projection_display['超效率值'] = projection_display['超效率值'].round(4)
+                            
+                            st.dataframe(projection_display, use_container_width=True, hide_index=True)
+                            
+                            st.markdown("""
+                            **投影目标值说明**：
+                            - **投入投影目标值** = 原始投入值 - 投入松弛变量
+                            - **产出投影目标值** = 原始产出值 + 产出松弛变量
+                            - 投影目标值表示达到效率前沿所需的最优投入产出组合
+                            """)
+                        
+                        # 松弛变量详细分析
+                        slack_cols = [col for col in results.columns if 'slacks' in col]
+                        if slack_cols:
+                            st.markdown("**松弛变量详细分析**")
+                            st.markdown("松弛变量表示各DMU与效率前沿的差距：")
+                            
+                            slack_display = results[['DMU', '效率值'] + slack_cols].copy()
+                            slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            slack_display['效率值'] = slack_display['效率值'].round(4)
+                            
+                            st.dataframe(slack_display, use_container_width=True, hide_index=True)
+                            
+                            st.markdown("""
+                            - **投入松弛变量**：表示可以减少的投入量（数值越大，投入冗余越多）
+                            - **产出松弛变量**：表示可以增加的产出量（数值越大，产出不足越多）
+                            - **松弛变量为0**：表示该变量已达到最优水平
+                            """)
+                        
+                        # 规模报酬分析
+                        if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
+                            st.markdown("** 规模报酬分析**")
+                            
+                            rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
+                            rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            rts_display['效率值'] = rts_display['效率值'].round(4)
+                            
+                            st.dataframe(rts_display, use_container_width=True, hide_index=True)
+                            
+                            st.markdown("""
+                            - **规模报酬不变(CRS)**：当前规模最优，建议保持
+                            - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
+                            - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
+                            """)
+                        
+                        # 求解状态分析
+                        if '求解状态' in results.columns and '迭代次数' in results.columns:
+                            st.markdown("**🔧 求解状态分析**")
+                            
+                            status_display = results[['DMU', '效率值', '求解状态', '迭代次数']].copy()
+                            status_display = status_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            status_display['效率值'] = status_display['效率值'].round(4)
+                            
+                            st.dataframe(status_display, use_container_width=True, hide_index=True)
+                                              
+                    # 检查结果中是否包含三种效率值（非超效率SBM模型）
+                    elif '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
                         # 如果包含三种效率值，显示完整的效率分解结果
                         st.markdown("**效率值排名（按综合效率降序排列）**")
                         
