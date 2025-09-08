@@ -3526,8 +3526,10 @@ def main():
     else:
         if 'data' not in st.session_state:
             # 请先在数据输入区中加载数据
+            st.info("请先在数据输入区中加载数据")
         elif 'dea_results' not in st.session_state:
             # 请先完成DEA效率分析
+            st.info("请先完成DEA效率分析")
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
 
