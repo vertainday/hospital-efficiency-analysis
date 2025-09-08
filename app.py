@@ -360,8 +360,8 @@ class CustomDEA:
                         phi * self.output_data[dmu, r] - 
                         np.sum(lambda_values[dmu] * self.output_data[:, r]))
             else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 0.5
+                # 求解失败，不设置默认值
+                efficiency_scores[dmu] = np.nan
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -446,8 +446,8 @@ class CustomDEA:
                         self.output_data[dmu, r] - 
                         np.sum(lambda_values[dmu] * self.output_data[:, r]))
             else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 0.5
+                # 求解失败，不设置默认值
+                efficiency_scores[dmu] = np.nan
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -536,8 +536,8 @@ class CustomDEA:
                         phi * self.output_data[dmu, r] - 
                         np.sum(lambda_values[dmu] * self.output_data[:, r]))
             else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 0.5
+                # 求解失败，不设置默认值
+                efficiency_scores[dmu] = np.nan
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -627,8 +627,8 @@ class CustomDEA:
                 
                 efficiency_scores[dmu] = (1 - input_inefficiency) / (1 + output_inefficiency)
             else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 0.5
+                # 求解失败，不设置默认值
+                efficiency_scores[dmu] = np.nan
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -641,10 +641,11 @@ class CustomDEA:
         超效率SBM模型 - 允许效率值大于1
         
         数学公式：
-        min δ = (1 + (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 - (1/s)∑(r=1 to s)(sᵣ⁺/yᵣ₀))
-        s.t. x₀ = Xλ + s⁻
-             y₀ = Yλ - s⁺
-             λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0
+        min ρ* = (1 - (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(r=1 to s)(sᵣ⁺/yᵣ₀) + ∑(p=1 to d)(sᵤᵤ/uᵤ₀)))
+        s.t. ∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻, i=1,...,m
+             ∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺, r=1,...,s
+             ∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ, p=1,...,d
+             λⱼ ≥ 0, sᵢ⁻ ≥ 0, sᵣ⁺ ≥ 0, sᵤᵤ ≥ 0
              (排除被评估的DMU)
         """
         efficiency_scores = np.zeros(self.n_dmus)
@@ -652,62 +653,99 @@ class CustomDEA:
         slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
         lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
+        # 处理非期望产出
+        if undesirable_outputs is not None:
+            # 分离期望产出和非期望产出
+            desirable_outputs = [var for var in range(self.n_outputs) if var not in undesirable_outputs]
+            n_desirable = len(desirable_outputs)
+            n_undesirable = len(undesirable_outputs)
+        else:
+            # 所有产出都是期望产出
+            desirable_outputs = list(range(self.n_outputs))
+            n_desirable = self.n_outputs
+            n_undesirable = 0
+        
         for dmu in range(self.n_dmus):
-            # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个)
-            n_vars = self.n_dmus - 1 + self.n_inputs + self.n_outputs
+            # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
+            n_vars = self.n_dmus - 1 + self.n_inputs + n_desirable + n_undesirable
             
-            # 目标函数：min δ
+            # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+            # 使用Charnes-Cooper变换：t = 1 / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
             c = np.zeros(n_vars + 1)
             c[self.n_dmus - 1] = 1  # t的系数
             
             # 约束条件
-            # 投入约束：tx₀ = tXλ + ts⁻
+            # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
             A_eq_inputs = np.zeros((self.n_inputs, n_vars + 1))
             b_eq_inputs = np.zeros(self.n_inputs)
             
             for i in range(self.n_inputs):
-                A_eq_inputs[i, self.n_dmus - 1] = self.input_data[dmu, i]  # t的系数
                 # λ的系数（排除被评估的DMU）
                 lambda_idx = 0
                 for j in range(self.n_dmus):
                     if j != dmu:
-                        A_eq_inputs[i, lambda_idx] = -self.input_data[j, i]
+                        A_eq_inputs[i, lambda_idx] = self.input_data[j, i]
                         lambda_idx += 1
-                A_eq_inputs[i, self.n_dmus - 1 + 1 + i] = -1  # s⁻的系数
+                A_eq_inputs[i, self.n_dmus - 1 + 1 + i] = 1  # s⁻的系数
                 b_eq_inputs[i] = self.input_data[dmu, i]
             
-            # 产出约束：ty₀ = tYλ - ts⁺
-            A_eq_outputs = np.zeros((self.n_outputs, n_vars + 1))
-            b_eq_outputs = np.zeros(self.n_outputs)
+            # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
+            A_eq_outputs = np.zeros((n_desirable, n_vars + 1))
+            b_eq_outputs = np.zeros(n_desirable)
             
-            for r in range(self.n_outputs):
-                A_eq_outputs[r, self.n_dmus - 1] = self.output_data[dmu, r]  # t的系数
+            for r_idx, r in enumerate(desirable_outputs):
                 # λ的系数（排除被评估的DMU）
                 lambda_idx = 0
                 for j in range(self.n_dmus):
                     if j != dmu:
-                        A_eq_outputs[r, lambda_idx] = -self.output_data[j, r]
+                        A_eq_outputs[r_idx, lambda_idx] = self.output_data[j, r]
                         lambda_idx += 1
-                A_eq_outputs[r, self.n_dmus - 1 + self.n_inputs + 1 + r] = 1  # s⁺的系数
-                b_eq_outputs[r] = self.output_data[dmu, r]
+                A_eq_outputs[r_idx, self.n_dmus - 1 + self.n_inputs + 1 + r_idx] = -1  # s⁺的系数
+                b_eq_outputs[r_idx] = self.output_data[dmu, r]
             
-            # 归一化约束：t + (1/m)∑(sᵢ⁻/xᵢ₀) - (1/s)∑(sᵣ⁺/yᵣ₀) = 1
+            # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
+            A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
+            b_eq_undesirable = np.zeros(n_undesirable)
+            
+            for u_idx, u in enumerate(undesirable_outputs):
+                # λ的系数（排除被评估的DMU）
+                lambda_idx = 0
+                for j in range(self.n_dmus):
+                    if j != dmu:
+                        A_eq_undesirable[u_idx, lambda_idx] = self.output_data[j, u]
+                        lambda_idx += 1
+                A_eq_undesirable[u_idx, self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] = 1  # sᵤ的系数
+                b_eq_undesirable[u_idx] = self.output_data[dmu, u]
+            
+            # 归一化约束：t + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
             A_eq_norm = np.zeros((1, n_vars + 1))
             A_eq_norm[0, self.n_dmus - 1] = 1  # t的系数
             
-            for i in range(self.n_inputs):
-                A_eq_norm[0, self.n_dmus - 1 + 1 + i] = 1.0 / (self.n_inputs * self.input_data[dmu, i])
+            # 期望产出项
+            for r_idx, r in enumerate(desirable_outputs):
+                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, r])
             
-            for r in range(self.n_outputs):
-                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + 1 + r] = -1.0 / (self.n_outputs * self.output_data[dmu, r])
+            # 非期望产出项
+            for u_idx, u in enumerate(undesirable_outputs):
+                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, u])
             
             b_eq_norm = np.array([1])
             
             # 合并等式约束
-            A_eq = np.vstack([A_eq_inputs, A_eq_outputs, A_eq_norm])
-            b_eq = np.hstack([b_eq_inputs, b_eq_outputs, b_eq_norm])
+            constraints = [A_eq_inputs, A_eq_outputs]
+            b_constraints = [b_eq_inputs, b_eq_outputs]
             
-            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, t ≥ 0
+            if n_undesirable > 0:
+                constraints.append(A_eq_undesirable)
+                b_constraints.append(b_eq_undesirable)
+            
+            constraints.append(A_eq_norm)
+            b_constraints.append(b_eq_norm)
+            
+            A_eq = np.vstack(constraints)
+            b_eq = np.hstack(b_constraints)
+            
+            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
             bounds = [(0, None)] * (n_vars + 1)
             
             # 求解线性规划
@@ -723,17 +761,35 @@ class CustomDEA:
                         lambda_values[dmu, j] = lambda_temp[lambda_idx]
                         lambda_idx += 1
                 
+                # 提取松弛变量
                 slack_inputs[dmu] = result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs] / t if t > 0 else result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs]
-                slack_outputs[dmu] = result.x[self.n_dmus - 1 + self.n_inputs + 1:] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + 1:]
+                
+                # 期望产出松弛变量
+                for r_idx, r in enumerate(desirable_outputs):
+                    slack_outputs[dmu, r] = result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx]
                 
                 # 计算超效率SBM效率值
+                # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
                 input_inefficiency = np.sum(slack_inputs[dmu] / self.input_data[dmu]) / self.n_inputs
-                output_inefficiency = np.sum(slack_outputs[dmu] / self.output_data[dmu]) / self.n_outputs
+                numerator = 1 - input_inefficiency
                 
-                efficiency_scores[dmu] = (1 + input_inefficiency) / (1 - output_inefficiency)
+                # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+                output_inefficiency = 0
+                for r_idx, r in enumerate(desirable_outputs):
+                    output_inefficiency += slack_outputs[dmu, r] / self.output_data[dmu, r]
+                
+                if n_undesirable > 0:
+                    for u_idx, u in enumerate(undesirable_outputs):
+                        u_slack = result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx]
+                        output_inefficiency += u_slack / self.output_data[dmu, u]
+                
+                output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
+                denominator = 1 + output_inefficiency
+                
+                efficiency_scores[dmu] = numerator / denominator
             else:
-                # 如果求解失败，使用简化方法
-                efficiency_scores[dmu] = 1.0
+                # 求解失败，不设置默认值
+                efficiency_scores[dmu] = np.nan
         
         self.slack_inputs = slack_inputs
         self.slack_outputs = slack_outputs
@@ -1443,7 +1499,39 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_outputs)
             else:
                 efficiency_scores = dea.super_sbm()
-            results_dict['效率值'] = efficiency_scores
+            results_dict['超效率值'] = efficiency_scores
+            
+            # 添加投影目标值（原始值 - 松弛变量）
+            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+                for i, var in enumerate(input_vars):
+                    projection = input_data[:, i] - dea.dea.slack_inputs[:, i]
+                    results_dict[f'{var}_投影目标值'] = projection
+            
+            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+                for r, var in enumerate(output_vars):
+                    projection = output_data[:, r] + dea.dea.slack_outputs[:, r]
+                    results_dict[f'{var}_投影目标值'] = projection
+            
+            # 添加规模报酬分析
+            # 计算λ值的和来判断规模报酬
+            if hasattr(dea.dea, 'lambda_values') and dea.dea.lambda_values is not None:
+                lambda_sums = np.sum(dea.dea.lambda_values, axis=1)
+                rts_status = []
+                scale_advice = []
+                
+                for i, lambda_sum in enumerate(lambda_sums):
+                    if abs(lambda_sum - 1.0) < 1e-6:
+                        rts_status.append("规模报酬不变(CRS)")
+                        scale_advice.append("保持当前规模")
+                    elif lambda_sum < 1.0:
+                        rts_status.append("规模报酬递增(IRS)")
+                        scale_advice.append("建议扩大规模")
+                    else:
+                        rts_status.append("规模报酬递减(DRS)")
+                        scale_advice.append("建议缩小规模")
+                
+                results_dict['规模报酬(RTS)'] = rts_status
+                results_dict['规模调整建议'] = scale_advice
         else:
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
@@ -1461,10 +1549,17 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         results_df = pd.DataFrame(results_dict)
         
         # 检查是否有NaN值（求解失败）
-        efficiency_scores = results_df['效率值'].values
+        if '超效率值' in results_df.columns:
+            efficiency_scores = results_df['超效率值'].values
+        else:
+            efficiency_scores = results_df['效率值'].values
+            
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
-            st.error(f"有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
+            if st.session_state.get('dea_model') == 'Super-SBM':
+                st.error(f"❌ 超效率SBM模型求解失败：有 {nan_count} 个DMU无法求解，请检查数据或模型设置")
+            else:
+                st.error(f"有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
         
         # 效率值后处理：根据模型类型设置不同的范围检查
         valid_mask = ~np.isnan(efficiency_scores)
@@ -2123,7 +2218,7 @@ def main():
                         
                         if selected_undesirable:
                             undesirable_outputs = selected_undesirable
-                            st.success(f"✅ 已选择 {len(selected_undesirable)} 个非期望产出变量")
+                            st.success(f" 已选择 {len(selected_undesirable)} 个非期望产出变量")
                             st.markdown("**非期望产出变量：**")
                             for var in selected_undesirable:
                                 st.write(f"• {var}")
@@ -2251,21 +2346,44 @@ def main():
                         """)
                         
                     else:
-                        # 如果没有三种效率值，显示单一效率值
-                        st.markdown("**效率值排名（按效率值降序排列）**")
-                        try:
-                            results_display = results.copy()
-                        except Exception as e:
-                            st.error(f"结果数据复制失败: {e}")
-                            results_display = results
-                        
-                        # 按效率值降序排序
-                        results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                        results_display['效率值'] = results_display['效率值'].round(3)
-                        results_display['排名'] = range(1, len(results_display) + 1)
-                        
-                        # 重新排列列顺序
-                        results_display = results_display[['排名', 'DMU', '效率值']]
+                        # 检查是否为超效率SBM模型
+                        if st.session_state.get('dea_model') == 'Super-SBM' and '超效率值' in results.columns:
+                            # 超效率SBM模型的专门结果展示
+                            st.markdown("**超效率SBM分析结果（按超效率值降序排列）**")
+                            
+                            # 按超效率值降序排序
+                            results_display = results.sort_values('超效率值', ascending=False).reset_index(drop=True)
+                            results_display['超效率值'] = results_display['超效率值'].round(4)
+                            results_display['排名'] = range(1, len(results_display) + 1)
+                            
+                            # 选择要显示的列
+                            display_cols = ['排名', 'DMU', '超效率值']
+                            
+                            # 添加规模报酬相关列
+                            if '规模报酬(RTS)' in results_display.columns:
+                                display_cols.append('规模报酬(RTS)')
+                            if '规模调整建议' in results_display.columns:
+                                display_cols.append('规模调整建议')
+                            
+                            # 重新排列列顺序
+                            results_display = results_display[display_cols]
+                            
+                        else:
+                            # 其他模型的单一效率值显示
+                            st.markdown("**效率值排名（按效率值降序排列）**")
+                            try:
+                                results_display = results.copy()
+                            except Exception as e:
+                                st.error(f"结果数据复制失败: {e}")
+                                results_display = results
+                            
+                            # 按效率值降序排序
+                            results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            results_display['效率值'] = results_display['效率值'].round(3)
+                            results_display['排名'] = range(1, len(results_display) + 1)
+                            
+                            # 重新排列列顺序
+                            results_display = results_display[['排名', 'DMU', '效率值']]
                         
                         # 应用蓝色渐变背景样式
                         st.markdown("""
@@ -2299,6 +2417,64 @@ def main():
                             | **ρ > 1** | 超有效（Super-Efficient） | 不仅有效，而且比当前前沿面更优；即使去掉自己，仍被他人投影 |
                             | **ρ < 1** | 无效 | 存在输入冗余或产出不足，可通过改进达到前沿 |
                             """)
+                            
+                            # 超效率SBM模型的详细分析结果
+                            st.subheader("📊 超效率SBM详细分析结果")
+                            
+                            # 投影目标值分析
+                            projection_cols = [col for col in results.columns if '投影目标值' in col]
+                            if projection_cols:
+                                st.markdown("**🎯 投影目标值分析**")
+                                st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
+                                
+                                projection_display = results[['DMU', '超效率值'] + projection_cols].copy()
+                                projection_display = projection_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
+                                projection_display['超效率值'] = projection_display['超效率值'].round(4)
+                                
+                                st.dataframe(projection_display, use_container_width=True, hide_index=True)
+                                
+                                st.markdown("""
+                                **投影目标值说明**：
+                                - **投入投影目标值** = 原始投入值 - 投入松弛变量
+                                - **产出投影目标值** = 原始产出值 + 产出松弛变量
+                                - 投影目标值表示达到效率前沿所需的最优投入产出组合
+                                """)
+                            
+                            # 松弛变量详细分析
+                            slack_cols = [col for col in results.columns if 'slacks' in col]
+                            if slack_cols:
+                                st.markdown("**📈 松弛变量详细分析**")
+                                st.markdown("松弛变量表示各DMU与效率前沿的差距：")
+                                
+                                slack_display = results[['DMU', '超效率值'] + slack_cols].copy()
+                                slack_display = slack_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
+                                slack_display['超效率值'] = slack_display['超效率值'].round(4)
+                                
+                                st.dataframe(slack_display, use_container_width=True, hide_index=True)
+                                
+                                st.markdown("""
+                                **松弛变量说明**：
+                                - **投入松弛变量**：表示可以减少的投入量（数值越大，投入冗余越多）
+                                - **产出松弛变量**：表示可以增加的产出量（数值越大，产出不足越多）
+                                - **松弛变量为0**：表示该变量已达到最优水平
+                                """)
+                            
+                            # 规模报酬分析
+                            if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
+                                st.markdown("**📊 规模报酬分析**")
+                                
+                                rts_display = results[['DMU', '超效率值', '规模报酬(RTS)', '规模调整建议']].copy()
+                                rts_display = rts_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
+                                rts_display['超效率值'] = rts_display['超效率值'].round(4)
+                                
+                                st.dataframe(rts_display, use_container_width=True, hide_index=True)
+                                
+                                st.markdown("""
+                                **规模报酬分析说明**：
+                                - **规模报酬不变(CRS)**：当前规模最优，建议保持
+                                - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
+                                - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
+                                """)
                         else:
                             st.markdown("""
                             ### 📋 效率值解释
@@ -2306,21 +2482,25 @@ def main():
                             - **效率值 < 1**：技术无效，存在改进空间
                             """)
                                        
-                    # 先显示松弛变量表格
-                    fig, slack_data = create_efficiency_chart(results)
-                    if slack_data and slack_data.get('columns'):
-                        st.subheader("📊 松弛变量分析")
-                        st.markdown("松弛变量表示各DMU在投入和产出方面的冗余或不足情况：")
-                        
-                        # 显示松弛变量数据表格
-                        st.dataframe(slack_data['data'], use_container_width=True, hide_index=True)
-                        
-                        # 松弛变量解释说明
-                        st.markdown("""
-                        • **投入松弛变量S-(差额变数)**: 指为达到目标效率可以减少的投入量
-                        
-                        • **产出松弛变量S+(超额变数)**: 指为达到目标效率可以增加的产出量
-                        """)
+                    # 松弛变量分析（非超效率SBM模型）
+                    if st.session_state.get('dea_model') != 'Super-SBM':
+                        fig, slack_data = create_efficiency_chart(results)
+                        if slack_data and slack_data.get('columns'):
+                            st.subheader("📊 松弛变量分析")
+                            st.markdown("松弛变量表示各DMU在投入和产出方面的冗余或不足情况：")
+                            
+                            # 显示松弛变量数据表格
+                            st.dataframe(slack_data['data'], use_container_width=True, hide_index=True)
+                            
+                            # 松弛变量解释说明
+                            st.markdown("""
+                            • **投入松弛变量S-(差额变数)**: 指为达到目标效率可以减少的投入量
+                            
+                            • **产出松弛变量S+(超额变数)**: 指为达到目标效率可以增加的产出量
+                            """)
+                    else:
+                        # 超效率SBM模型使用专门的松弛变量分析（已在上面显示）
+                        fig, slack_data = create_efficiency_chart(results)
                     
                     # 再显示效率排名图表
                     st.subheader(" 效率排名可视化")
