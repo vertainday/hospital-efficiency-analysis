@@ -654,16 +654,20 @@ class CustomDEA:
         lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
         # 处理非期望产出
-        if undesirable_outputs is not None:
+        if undesirable_outputs is not None and len(undesirable_outputs) > 0:
+            # undesirable_outputs现在是索引列表
+            undesirable_indices = undesirable_outputs
+            
             # 分离期望产出和非期望产出
-            desirable_outputs = [var for var in range(self.n_outputs) if var not in undesirable_outputs]
+            desirable_outputs = [var for var in range(self.n_outputs) if var not in undesirable_indices]
             n_desirable = len(desirable_outputs)
-            n_undesirable = len(undesirable_outputs)
+            n_undesirable = len(undesirable_indices)
         else:
             # 所有产出都是期望产出
             desirable_outputs = list(range(self.n_outputs))
             n_desirable = self.n_outputs
             n_undesirable = 0
+            undesirable_indices = []
         
         for dmu in range(self.n_dmus):
             # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
@@ -707,7 +711,7 @@ class CustomDEA:
             A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
             b_eq_undesirable = np.zeros(n_undesirable)
             
-            for u_idx, u in enumerate(undesirable_outputs):
+            for u_idx, u in enumerate(undesirable_indices):
                 # λ的系数（排除被评估的DMU）
                 lambda_idx = 0
                 for j in range(self.n_dmus):
@@ -726,7 +730,7 @@ class CustomDEA:
                 A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, r])
             
             # 非期望产出项
-            for u_idx, u in enumerate(undesirable_outputs):
+            for u_idx, u in enumerate(undesirable_indices):
                 A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, u])
             
             b_eq_norm = np.array([1])
@@ -779,7 +783,7 @@ class CustomDEA:
                     output_inefficiency += slack_outputs[dmu, r] / self.output_data[dmu, r]
                 
                 if n_undesirable > 0:
-                    for u_idx, u in enumerate(undesirable_outputs):
+                    for u_idx, u in enumerate(undesirable_indices):
                         u_slack = result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx]
                         output_inefficiency += u_slack / self.output_data[dmu, u]
                 
@@ -1496,7 +1500,12 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         elif model_type == 'Super-SBM':
             # 处理非期望产出
             if undesirable_outputs:
-                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_outputs)
+                # 将变量名转换为在output_vars中的索引
+                undesirable_indices = []
+                for var_name in undesirable_outputs:
+                    if var_name in output_vars:
+                        undesirable_indices.append(output_vars.index(var_name))
+                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices)
             else:
                 efficiency_scores = dea.super_sbm()
             results_dict['超效率值'] = efficiency_scores
