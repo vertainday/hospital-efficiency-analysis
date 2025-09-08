@@ -1504,13 +1504,14 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
 
 def create_efficiency_chart(results):
     """
-    创建效率排名柱状图 - 只显示效率值，不包含松弛变量
+    创建效率排名柱状图 - 显示效率值，并处理松弛变量数据
     
     参数:
-    - results: 包含效率值的DataFrame，应包含综合效率、技术效率、规模效率等列
+    - results: 包含效率值和松弛变量的DataFrame
     
     返回:
     - fig: Plotly图表对象
+    - slack_data: 松弛变量数据字典
     """
     # 检查可用的效率列
     efficiency_columns = []
@@ -1523,11 +1524,14 @@ def create_efficiency_chart(results):
     if '效率值' in results.columns:
         efficiency_columns.append('效率值')
     
+    # 检查松弛变量列
+    slack_columns = [col for col in results.columns if 'slacks' in col]
+    
     # 如果没有找到效率列，返回空图表
     if not efficiency_columns:
         fig = go.Figure()
         fig.add_annotation(text="未找到效率数据", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        return fig
+        return fig, {}
     
     # 创建柱状图
     fig = go.Figure()
@@ -1567,7 +1571,16 @@ def create_efficiency_chart(results):
         )
     )
     
-    return fig
+    # 处理松弛变量数据
+    slack_data = {}
+    if slack_columns:
+        slack_data = {
+            'columns': slack_columns,
+            'data': results[['DMU'] + slack_columns].copy(),
+            'summary': results[slack_columns].describe()
+        }
+    
+    return fig, slack_data
 
 def analyze_dea_results(results, data, input_vars, output_vars, model_type='BCC', orientation='input', undesirable_outputs=None):
     """
@@ -2997,8 +3010,46 @@ def main():
                     
                     # 创建效率排名图表
                     st.subheader("📈 效率排名可视化")
-                    fig = create_efficiency_chart(results)
+                    fig, slack_data = create_efficiency_chart(results)
                     st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 显示松弛变量表格
+                    if slack_data and slack_data.get('columns'):
+                        st.subheader("📊 松弛变量分析")
+                        st.markdown("松弛变量表示各DMU在投入和产出方面的冗余或不足情况：")
+                        
+                        # 显示松弛变量数据表格
+                        st.dataframe(slack_data['data'], use_container_width=True, hide_index=True)
+                        
+                        # 显示松弛变量统计信息
+                        st.markdown("**松弛变量统计信息**")
+                        st.dataframe(slack_data['summary'].round(6), use_container_width=True)
+                        
+                        # 识别有松弛的DMU
+                        st.markdown("**存在松弛的DMU分析**")
+                        slack_analysis = []
+                        
+                        for _, row in slack_data['data'].iterrows():
+                            dmu = row['DMU']
+                            slack_info = []
+                            
+                            for col in slack_data['columns']:
+                                slack_value = row[col]
+                                if slack_value > 1e-6:  # 有显著松弛
+                                    slack_info.append(f"{col}: {slack_value:.6f}")
+                            
+                            if slack_info:
+                                slack_analysis.append({
+                                    'DMU': dmu,
+                                    '松弛变量': '; '.join(slack_info),
+                                    '松弛变量数量': len(slack_info)
+                                })
+                        
+                        if slack_analysis:
+                            slack_df = pd.DataFrame(slack_analysis)
+                            st.dataframe(slack_df, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("所有DMU的松弛变量都为0，表示所有变量都达到最优水平")
                     
                     # 提供结果下载
                     st.subheader("💾 结果下载")
