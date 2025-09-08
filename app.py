@@ -3146,7 +3146,7 @@ def main():
 
 def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
     """
-    修复后的超效率SBM模型实现 - 添加无解处理选项
+    正确的超效率SBM模型实现 - 使用pulp库，基于Tone (2002)的超效率SBM模型
     
     参数:
     - input_data: 投入数据 (n_dmus, n_inputs)
@@ -3169,7 +3169,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
     slack_inputs = np.zeros((n_dmus, n_inputs))
     slack_outputs = np.zeros((n_dmus, n_outputs))
     lambda_sums = np.zeros(n_dmus)
-    solution_status = ['success'] * n_dmus  # 求解状态
+    solution_status = ['success'] * n_dmus
     
     # 处理非期望产出
     if undesirable_outputs is not None and len(undesirable_outputs) > 0:
@@ -3184,125 +3184,82 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         undesirable_indices = []
     
     for dmu in range(n_dmus):
-        # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个), t (1个)
-        n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable + 1
+        # 超效率SBM模型：排除被评估的DMU
+        other_dmus = [i for i in range(n_dmus) if i != dmu]
+        n_other = len(other_dmus)
+        
+        if n_other == 0:
+            # 只有一个DMU的情况
+            efficiency_scores[dmu] = 1.0
+            solution_status[dmu] = 'single_dmu'
+            continue
+        
+        # 创建线性规划问题
+        prob = pulp.LpProblem(f"SuperSBM_{dmu}", pulp.LpMinimize)
+        
+        # 创建变量
+        t = pulp.LpVariable("t", lowBound=0, upBound=None)
+        lambda_vars = pulp.LpVariable.dicts("lambda", range(n_other), lowBound=0)
+        input_slacks = pulp.LpVariable.dicts("input_slack", range(n_inputs), lowBound=0)
+        output_slacks = pulp.LpVariable.dicts("output_slack", range(n_desirable), lowBound=0)
+        undesirable_slacks = pulp.LpVariable.dicts("undesirable_slack", range(n_undesirable), lowBound=0)
         
         # 目标函数：min t + (1/m)∑(sᵢ⁻/xᵢ₀)
-        c = np.zeros(n_vars)
-        c[n_dmus - 1] = 1  # t的系数
+        prob += t + pulp.lpSum([input_slacks[i] / (n_inputs * input_data[dmu, i]) for i in range(n_inputs)])
+        
+        # 约束条件
+        
+        # 1. 投入约束：∑λⱼxᵢⱼ = txᵢ₀ - sᵢ⁻
         for i in range(n_inputs):
-            c[n_dmus - 1 + 1 + i] = 1.0 / (n_inputs * input_data[dmu, i])
+            constraint = (pulp.lpSum([lambda_vars[j] * input_data[other_dmus[j], i] for j in range(n_other)]) == 
+                         t * input_data[dmu, i] - input_slacks[i])
+            prob += constraint, f"input_constraint_{i}"
         
-        # 修复1: 正确设置约束条件（右边应为0）
-        # 投入约束：∑(j≠0) λⱼxᵢⱼ = txᵢ₀ - sᵢ⁻ → ∑(j≠0) λⱼxᵢⱼ - txᵢ₀ + sᵢ⁻ = 0
-        A_eq_inputs = np.zeros((n_inputs, n_vars))
-        
-        for i in range(n_inputs):
-            # λ的系数（排除被评估的DMU）
-            lambda_idx = 0
-            for j in range(n_dmus):
-                if j != dmu:
-                    A_eq_inputs[i, lambda_idx] = input_data[j, i]
-                    lambda_idx += 1
-            # t的系数（负号）
-            A_eq_inputs[i, n_dmus - 1] = -input_data[dmu, i]
-            # s⁻的系数（正号）
-            A_eq_inputs[i, n_dmus - 1 + 1 + i] = 1
-        
-        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = tyᵣ₀ + sᵣ⁺ → ∑(j≠0) λⱼyᵣⱼ - tyᵣ₀ - sᵣ⁺ = 0
-        A_eq_outputs = np.zeros((n_desirable, n_vars))
-        
+        # 2. 期望产出约束：∑λⱼyᵣⱼ = tyᵣ₀ + sᵣ⁺
         for r_idx, r in enumerate(desirable_outputs):
-            # λ的系数（排除被评估的DMU）
-            lambda_idx = 0
-            for j in range(n_dmus):
-                if j != dmu:
-                    A_eq_outputs[r_idx, lambda_idx] = output_data[j, r]
-                    lambda_idx += 1
-            # t的系数（负号）
-            A_eq_outputs[r_idx, n_dmus - 1] = -output_data[dmu, r]
-            # s⁺的系数（负号）
-            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = -1
+            constraint = (pulp.lpSum([lambda_vars[j] * output_data[other_dmus[j], r] for j in range(n_other)]) == 
+                         t * output_data[dmu, r] + output_slacks[r_idx])
+            prob += constraint, f"output_constraint_{r_idx}"
         
-        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = tuᵤ₀ - sᵤᵤ → ∑(j≠0) λⱼuᵤⱼ - tuᵤ₀ + sᵤᵤ = 0
-        A_eq_undesirable = np.zeros((n_undesirable, n_vars))
-        
+        # 3. 非期望产出约束：∑λⱼuᵤⱼ = tuᵤ₀ - sᵤᵤ
         for u_idx, u in enumerate(undesirable_indices):
-            # λ的系数（排除被评估的DMU）
-            lambda_idx = 0
-            for j in range(n_dmus):
-                if j != dmu:
-                    A_eq_undesirable[u_idx, lambda_idx] = output_data[j, u]
-                    lambda_idx += 1
-            # t的系数（负号）
-            A_eq_undesirable[u_idx, n_dmus - 1] = -output_data[dmu, u]
-            # sᵤ的系数（正号）
-            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = 1
+            constraint = (pulp.lpSum([lambda_vars[j] * output_data[other_dmus[j], u] for j in range(n_other)]) == 
+                         t * output_data[dmu, u] - undesirable_slacks[u_idx])
+            prob += constraint, f"undesirable_constraint_{u_idx}"
         
-        # 归一化约束：t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
-        A_eq_norm = np.zeros((1, n_vars))
-        A_eq_norm[0, n_dmus - 1] = 1  # t的系数
-        
-        # 期望产出项
+        # 4. 归一化约束：t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
+        norm_terms = []
         for r_idx, r in enumerate(desirable_outputs):
-            A_eq_norm[0, n_dmus - 1 + n_inputs + 1 + r_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
-        
-        # 非期望产出项
+            norm_terms.append(output_slacks[r_idx] / ((n_desirable + n_undesirable) * output_data[dmu, r]))
         for u_idx, u in enumerate(undesirable_indices):
-            A_eq_norm[0, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
+            norm_terms.append(undesirable_slacks[u_idx] / ((n_desirable + n_undesirable) * output_data[dmu, u]))
         
-        # VRS约束：∑λⱼ = 1（仅对VRS模型）
-        A_eq_vrs = np.zeros((0, n_vars))
+        prob += t - pulp.lpSum(norm_terms) == 1, "normalization_constraint"
         
+        # 5. VRS约束：∑λⱼ = 1（仅对VRS模型）
         if rts == 'vrs':
-            A_eq_vrs = np.zeros((1, n_vars))
-            # λ的系数（排除被评估的DMU）
-            for j in range(n_dmus - 1):
-                A_eq_vrs[0, j] = 1
+            prob += pulp.lpSum([lambda_vars[j] for j in range(n_other)]) == 1, "vrs_constraint"
         
-        # 合并等式约束
-        constraints = [A_eq_inputs, A_eq_outputs]
-        
-        if n_undesirable > 0:
-            constraints.append(A_eq_undesirable)
-        
-        constraints.append(A_eq_norm)
-        
-        # 添加VRS约束（如果适用)
-        if rts == 'vrs':
-            constraints.append(A_eq_vrs)
-        
-        A_eq = np.vstack(constraints)
-        b_eq = np.zeros(A_eq.shape[0])  # 所有约束右边应为0（除了归一化约束）
-        b_eq[-1] = 1  # 归一化约束右边为1
-        
-        # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
-        bounds = [(0, None)] * n_vars
-        
-        # 求解线性规划
+        # 求解
         try:
-            from scipy.optimize import linprog
-            result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, 
-                            method='highs', options={'tol': 1e-9, 'maxiter': 5000})
+            prob.solve()
             
-            if result.success:
-                t = result.x[n_dmus - 1]
-                if t > 1e-10:
+            if prob.status == pulp.LpStatusOptimal:
+                t_value = pulp.value(t)
+                if t_value is not None and t_value > 1e-10:
                     # 提取松弛变量
-                    slack_inputs[dmu] = result.x[n_dmus - 1 + 1:n_dmus - 1 + 1 + n_inputs]
+                    for i in range(n_inputs):
+                        slack_inputs[dmu, i] = pulp.value(input_slacks[i]) or 0
                     
-                    # 期望产出松弛变量
                     for r_idx, r in enumerate(desirable_outputs):
-                        slack_outputs[dmu, r] = -result.x[n_dmus - 1 + n_inputs + 1 + r_idx]
+                        slack_outputs[dmu, r] = pulp.value(output_slacks[r_idx]) or 0
                     
-                    # 非期望产出松弛变量
-                    if n_undesirable > 0:
-                        for u_idx, u in enumerate(undesirable_indices):
-                            slack_outputs[dmu, u] = result.x[n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx]
+                    for u_idx, u in enumerate(undesirable_indices):
+                        slack_outputs[dmu, u] = pulp.value(undesirable_slacks[u_idx]) or 0
                     
                     # 计算λ和（用于规模报酬判定）
-                    lambda_vars = result.x[:n_dmus - 1]
-                    lambda_sums[dmu] = np.sum(lambda_vars)
+                    lambda_sum = sum(pulp.value(lambda_vars[j]) or 0 for j in range(n_other))
+                    lambda_sums[dmu] = lambda_sum
                     
                     # 计算超效率SBM效率值
                     # 分子：1 + (1/m)∑(sᵢ⁻/xᵢ₀)
@@ -3314,9 +3271,8 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     for r_idx, r in enumerate(desirable_outputs):
                         output_inefficiency += slack_outputs[dmu, r] / output_data[dmu, r]
                     
-                    if n_undesirable > 0:
-                        for u_idx, u in enumerate(undesirable_indices):
-                            output_inefficiency += slack_outputs[dmu, u] / output_data[dmu, u]
+                    for u_idx, u in enumerate(undesirable_indices):
+                        output_inefficiency += slack_outputs[dmu, u] / output_data[dmu, u]
                     
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                     
@@ -3327,27 +3283,27 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     
                     efficiency_scores[dmu] = numerator / denominator
                 else:
-                    # 修复2: 无解处理
+                    # 无解处理
                     if handle_infeasible == 'set_to_1':
                         efficiency_scores[dmu] = 1.0
                         solution_status[dmu] = 'infeasible (set to 1)'
-                    else:  # 'exclude'
+                    else:
                         efficiency_scores[dmu] = np.nan
                         solution_status[dmu] = 'infeasible'
             else:
-                # 修复2: 无解处理
+                # 无解处理
                 if handle_infeasible == 'set_to_1':
                     efficiency_scores[dmu] = 1.0
                     solution_status[dmu] = 'infeasible (set to 1)'
-                else:  # 'exclude'
+                else:
                     efficiency_scores[dmu] = np.nan
                     solution_status[dmu] = 'infeasible'
         except Exception as e:
-            # 修复2: 无解处理
+            # 无解处理
             if handle_infeasible == 'set_to_1':
                 efficiency_scores[dmu] = 1.0
                 solution_status[dmu] = f'infeasible (set to 1): {str(e)}'
-            else:  # 'exclude'
+            else:
                 efficiency_scores[dmu] = np.nan
                 solution_status[dmu] = f'infeasible: {str(e)}'
     
