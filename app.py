@@ -1499,12 +1499,12 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         return results_df
 
     except Exception as e:
-        st.error(f"❌ DEA分析过程中发生错误: {str(e)}")
+        st.error(f"DEA分析过程中发生错误: {str(e)}")
         return None
 
 def create_efficiency_chart(results):
     """
-    创建效率排名柱状图 - 支持多种效率类型和松弛变量显示
+    创建效率排名柱状图 - 只显示效率值，不包含松弛变量
     
     参数:
     - results: 包含效率值的DataFrame，应包含综合效率、技术效率、规模效率等列
@@ -1529,79 +1529,34 @@ def create_efficiency_chart(results):
         fig.add_annotation(text="未找到效率数据", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         return fig
     
-    # 创建子图
-    from plotly.subplots import make_subplots
-    
-    # 计算子图布局
-    n_efficiency = len(efficiency_columns)
-    n_slack = len([col for col in results.columns if 'slacks' in col])
-    
-    # 创建子图
-    if n_efficiency > 0 and n_slack > 0:
-        # 效率图和松弛变量图
-        fig = make_subplots(
-            rows=2, cols=1,
-            subplot_titles=('效率值对比', '松弛变量分析'),
-            vertical_spacing=0.1,
-            row_heights=[0.6, 0.4]
-        )
-    elif n_efficiency > 0:
-        # 只有效率图
-        fig = make_subplots(
-            rows=1, cols=1,
-            subplot_titles=('效率值对比',)
-        )
-    else:
-        # 只有松弛变量图
-        fig = make_subplots(
-            rows=1, cols=1,
-            subplot_titles=('松弛变量分析',)
-        )
+    # 创建柱状图
+    fig = go.Figure()
     
     # 添加效率柱状图
-    if n_efficiency > 0:
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-        
-        for i, col in enumerate(efficiency_columns):
-            color = colors[i % len(colors)]
-            fig.add_trace(
-                go.Bar(
-                    x=results['DMU'],
-                    y=results[col],
-                    name=col,
-                    marker_color=color,
-                    text=[f'{val:.3f}' for val in results[col]],
-                    textposition='outside',
-                    showlegend=True
-                ),
-                row=1, col=1
-            )
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
-    # 添加松弛变量图
-    if n_slack > 0:
-        slack_cols = [col for col in results.columns if 'slacks' in col]
-        colors_slack = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#ff99cc']
-        
-        for i, col in enumerate(slack_cols):
-            color = colors_slack[i % len(colors_slack)]
-            fig.add_trace(
-                go.Bar(
-                    x=results['DMU'],
-                    y=results[col],
-                    name=col,
-                    marker_color=color,
-                    text=[f'{val:.3f}' for val in results[col]],
-                    textposition='outside',
-                    showlegend=True
-                ),
-                row=2 if n_efficiency > 0 else 1, col=1
+    for i, col in enumerate(efficiency_columns):
+        color = colors[i % len(colors)]
+        fig.add_trace(
+            go.Bar(
+                x=results['DMU'],
+                y=results[col],
+                name=col,
+                marker_color=color,
+                text=[f'{val:.3f}' for val in results[col]],
+                textposition='outside',
+                showlegend=True
             )
+        )
     
     # 更新布局
     fig.update_layout(
-        height=800 if n_efficiency > 0 and n_slack > 0 else 500,
-        title_text="DEA分析结果 - 效率值与松弛变量",
+        height=500,
+        title_text="DEA效率值对比",
         title_x=0.5,
+        xaxis_title="DMU",
+        yaxis_title="效率值",
+        yaxis=dict(range=[0, 1.1]),
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -1611,17 +1566,6 @@ def create_efficiency_chart(results):
             x=1
         )
     )
-    
-    # 更新x轴标签
-    fig.update_xaxes(title_text="DMU", row=1, col=1)
-    if n_efficiency > 0 and n_slack > 0:
-        fig.update_xaxes(title_text="DMU", row=2, col=1)
-    
-    # 更新y轴标签
-    if n_efficiency > 0:
-        fig.update_yaxes(title_text="效率值", row=1, col=1, range=[0, 1.1])
-    if n_slack > 0:
-        fig.update_yaxes(title_text="松弛变量值", row=2 if n_efficiency > 0 else 1, col=1)
     
     return fig
 
