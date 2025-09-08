@@ -1532,11 +1532,8 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         elif model_type == 'BCC':
             results_dict['效率值'] = bcc_scores
         elif model_type == 'SBM':
-            # 处理非期望产出
-            if undesirable_outputs:
-                efficiency_scores = dea.sbm(undesirable_outputs=undesirable_outputs)
-            else:
-                efficiency_scores = dea.sbm()
+            # SBM模型目前不支持非期望产出，暂时忽略该参数
+            efficiency_scores = dea.sbm()
             results_dict['效率值'] = efficiency_scores
         elif model_type == 'Super-SBM':
             # 处理非期望产出
@@ -1547,7 +1544,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                     if var_name in output_vars:
                         undesirable_indices.append(output_vars.index(var_name))
                 efficiency_scores = dea.super_sbm(
-                    undesirable_outputs=undesirable_outputs, 
+                    undesirable_outputs=undesirable_indices,  # 传递索引列表而不是变量名列表
                     rts=rts,
                     handle_infeasible=handle_infeasible
                 )
@@ -1572,6 +1569,13 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                     results_dict[f'{var}_投影目标值'] = projection
             
             if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+                # 获取非期望产出的变量名列表（用于投影计算）
+                undesirable_var_names = []
+                if undesirable_outputs:
+                    for var_name in undesirable_outputs:
+                        if var_name in output_vars:
+                            undesirable_var_names.append(var_name)
+                
                 for r, var in enumerate(output_vars):
                     # 对于期望产出：
                     #   - 效率值≥1: 投影 = 原始值 - |slack|
@@ -1581,7 +1585,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                     #   - 效率值<1: 投影 = 原始值 - |slack|
                     projection = np.zeros(len(output_data))
                     for dmu in range(len(output_data)):
-                        if var in undesirable_outputs:
+                        if var in undesirable_var_names:
                             if efficiency_scores[dmu] >= 1.0:
                                 projection[dmu] = output_data[dmu, r] + abs(dea.dea.slack_outputs[dmu, r])
                             else:

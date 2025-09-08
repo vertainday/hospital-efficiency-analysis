@@ -6,3 +6,4 @@ scikit-learn==1.6.1
 scipy==1.15.3
 openpyxl==3.1.2
 pyDEA==1.6
+PuLP==3.2.2
