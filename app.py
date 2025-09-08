@@ -1532,8 +1532,26 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         elif model_type == 'BCC':
             results_dict['效率值'] = bcc_scores
         elif model_type == 'SBM':
-            # SBM模型目前不支持非期望产出，暂时忽略该参数
-            efficiency_scores = dea.sbm()
+            # SBM模型 - 使用新的calculate_regular_sbm函数
+            if undesirable_outputs:
+                # 将变量名转换为在output_vars中的索引
+                undesirable_indices = []
+                for var_name in undesirable_outputs:
+                    if var_name in output_vars:
+                        undesirable_indices.append(output_vars.index(var_name))
+                efficiency_scores = calculate_regular_sbm(
+                    dea.input_data, 
+                    dea.output_data, 
+                    undesirable_outputs=undesirable_indices, 
+                    rts='vrs'
+                )
+            else:
+                efficiency_scores = calculate_regular_sbm(
+                    dea.input_data, 
+                    dea.output_data, 
+                    undesirable_outputs=None, 
+                    rts='vrs'
+                )
             results_dict['效率值'] = efficiency_scores
         elif model_type == 'Super-SBM':
             # 处理非期望产出
@@ -2375,7 +2393,7 @@ def main():
                                 # DEA分析完成！
                 
                 with col_btn3:
-                    if st.button("📐 查看数学公式", type="secondary", use_container_width=True):
+                    if st.button("查看数学公式", type="secondary", use_container_width=True):
                         display_dea_formulas()
                 
                 # 显示DEA分析结果
@@ -2383,7 +2401,7 @@ def main():
                     results = st.session_state['dea_results']
                     
                     # 显示结果
-                    st.subheader("📊 效率分析结果")
+                    st.subheader("效率分析结果")
 
                     # 检查是否为超效率SBM模型
                     if st.session_state.get('dea_model') == 'Super-SBM':
@@ -2432,7 +2450,7 @@ def main():
                         st.markdown('</div>', unsafe_allow_html=True)
                         
                         # 超效率SBM模型的详细分析结果
-                        st.subheader("📊 超效率SBM详细分析结果")
+                        st.subheader("超效率SBM详细分析结果")
                         
                         # 投影目标值分析
                         projection_cols = [col for col in results.columns if '投影目标值' in col]
