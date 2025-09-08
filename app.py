@@ -1068,7 +1068,7 @@ class DEAWrapper:
         """SBM模型 - 包含非期望产出的松弛基础模型"""
         return self.dea.sbm(undesirable_outputs=undesirable_outputs)
     
-    def super_sbm(self, undesirable_outputs=None):
+    def super_sbm(self, undesirable_outputs=None, rts='vrs'):
         """超效率SBM模型 - 允许效率值大于1，包含规模报酬分析"""
         # 分别计算CR-SBM和VR-SBM
         crs_scores, crs_slack_inputs, crs_slack_outputs, crs_lambda_sums = super_sbm_correct(
@@ -1079,10 +1079,15 @@ class DEAWrapper:
             self.input_data, self.output_data, undesirable_outputs, rts='vrs'
         )
         
-        # 使用VR-SBM的结果作为主要效率值（更宽松的约束）
-        efficiency_scores = vrs_scores
-        slack_inputs = vrs_slack_inputs
-        slack_outputs = vrs_slack_outputs
+        # 根据用户选择的规模报酬假设决定主效率值
+        if rts == 'crs':
+            efficiency_scores = crs_scores
+            slack_inputs = crs_slack_inputs
+            slack_outputs = crs_slack_outputs
+        else:  # 'vrs'
+            efficiency_scores = vrs_scores
+            slack_inputs = vrs_slack_inputs
+            slack_outputs = vrs_slack_outputs
         
         # 计算规模报酬
         rts_status, rts_suggestions = calculate_sbm_rts(crs_scores, vrs_scores, vrs_lambda_sums)
@@ -1656,7 +1661,8 @@ def validate_dea_data(input_data, output_data):
     
     return True, "数据验证通过"
 
-def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation='input', undesirable_outputs=None):
+def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation='input', 
+                        undesirable_outputs=None, rts='vrs'):
     """
     执行DEA效率分析
     
@@ -1667,6 +1673,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
     - model_type: DEA模型类型 ('CCR', 'BCC', 'SBM', 'Super-SBM')
     - orientation: 导向类型 ('input', 'output')
     - undesirable_outputs: 非期望产出变量列表（仅SBM模型使用）
+    - rts: 规模报酬假设 ('crs' 或 'vrs')
     
     返回:
     - results: 包含效率值和其他分析结果的DataFrame
@@ -1743,9 +1750,9 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 for var_name in undesirable_outputs:
                     if var_name in output_vars:
                         undesirable_indices.append(output_vars.index(var_name))
-                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices)
+                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices, rts=rts)
             else:
-                efficiency_scores = dea.super_sbm()
+                efficiency_scores = dea.super_sbm(rts=rts)
             results_dict['效率值'] = efficiency_scores
             
             # 添加投影目标值（原始值 - 松弛变量）
@@ -1756,43 +1763,24 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             
             if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
                 for r, var in enumerate(output_vars):
-                    projection = output_data[:, r] + dea.dea.slack_outputs[:, r]
+                    # 注意：对于期望产出，投影 = 原始值 + 松弛变量
+                    # 对于非期望产出，投影 = 原始值 - 松弛变量
+                    if undesirable_outputs and var in undesirable_outputs:
+                        projection = input_data[:, i] - dea.dea.slack_outputs[:, r]
+                    else:
+                        projection = output_data[:, r] + dea.dea.slack_outputs[:, r]
                     results_dict[f'{var}_投影目标值'] = projection
             
             # 添加规模报酬分析
-            # 计算λ值的和来判断规模报酬
-            if hasattr(dea.dea, 'lambda_values') and dea.dea.lambda_values is not None:
-                lambda_sums = np.sum(dea.dea.lambda_values, axis=1)
-                rts_status = []
-                scale_advice = []
-                
-                for i, lambda_sum in enumerate(lambda_sums):
-                    if abs(lambda_sum - 1.0) < 1e-6:
-                        rts_status.append("规模报酬不变(CRS)")
-                        scale_advice.append("保持当前规模")
-                    elif lambda_sum < 1.0:
-                        rts_status.append("规模报酬递增(IRS)")
-                        scale_advice.append("建议扩大规模")
-                    else:
-                        rts_status.append("规模报酬递减(DRS)")
-                        scale_advice.append("建议缩小规模")
-                
-                results_dict['规模报酬(RTS)'] = rts_status
-                results_dict['规模调整建议'] = scale_advice
+            if hasattr(dea.dea, 'rts_status') and hasattr(dea.dea, 'rts_suggestions'):
+                results_dict['规模报酬(RTS)'] = dea.dea.rts_status
+                results_dict['规模调整建议'] = dea.dea.rts_suggestions
             
-            # 添加求解状态信息
-            results_dict['求解状态'] = ['成功' if not np.isnan(score) else '失败' for score in efficiency_scores]
-            
-            # 添加迭代次数信息（模拟，实际需要从求解器获取）
-            # 注意：这里使用模拟数据，实际实现需要从线性规划求解器获取迭代次数
-            iteration_counts = []
-            for i, score in enumerate(efficiency_scores):
-                if not np.isnan(score):
-                    # 模拟迭代次数（实际应该从求解器获取）
-                    iteration_counts.append(np.random.randint(5, 20))
-                else:
-                    iteration_counts.append(0)
-            results_dict['迭代次数'] = iteration_counts
+            # 添加CR-SBM和VR-SBM效率值
+            if hasattr(dea.dea, 'crs_scores'):
+                results_dict['CR-SBM效率值'] = dea.dea.crs_scores
+            if hasattr(dea.dea, 'vrs_scores'):
+                results_dict['VR-SBM效率值'] = dea.dea.vrs_scores
         else:
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
@@ -1818,58 +1806,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
-            if st.session_state.get('dea_model') == 'Super-SBM':
-                st.error(f"超效率SBM模型：有 {nan_count} 个DMU无法求解")
-                st.markdown("**🔍 数据检查建议：**")
-                st.markdown("""
-                所有自动修复策略都失败了，说明数据存在根本性问题，请检查：
-                
-                1. **数据完整性**：确保没有缺失值、无穷大值或异常值
-                2. **数据范围**：检查数据是否在合理范围内
-                3. **变量选择**：确认投入产出变量选择是否合理
-                4. **数据量**：确保有足够的DMU进行分析（建议至少3个）
-                5. **数据一致性**：检查投入产出数据是否逻辑一致
-                """)
-            else:
-                st.error(f"有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
-        
-        # 效率值后处理：根据模型类型设置不同的范围检查
-        valid_mask = ~np.isnan(efficiency_scores)
-        if np.any(valid_mask):
-            valid_scores = efficiency_scores[valid_mask]
-            
-            # 根据模型类型设置效率值范围
-            if model_type in ['CCR', 'BCC']:
-                # CCR和BCC模型：效率值应该在[0,1]范围内
-                if np.any(valid_scores > 1.0):
-                    st.error(f"检测到{model_type}模型效率值大于1，这表示计算有误，请检查数据或模型设置")
-                    st.error("CCR和BCC模型的效率值应该在[0,1]范围内")
-                if np.any(valid_scores < 0.0):
-                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
-                else:
-                    # 只对大于1的值进行修正（虽然这不应该发生）
-                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
-                    
-            elif model_type in ['SBM', 'Super-SBM']:
-                # SBM和Super-SBM模型：效率值可以大于1（超效率特征）
-                if np.any(valid_scores < 0.0):
-                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, np.inf)
-                else:
-                    # 只修正负值，保留大于1的值
-                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, np.inf)
-            
-            results_df['效率值'] = efficiency_scores
-        
-        # 对于超效率SBM模型，添加规模报酬信息
-        if model_type == 'Super-SBM' and hasattr(dea, 'rts_status'):
-            results_df['规模报酬(RTS)'] = dea.rts_status
-            results_df['规模调整建议'] = dea.rts_suggestions
-            if hasattr(dea, 'crs_scores'):
-                results_df['CR-SBM效率值'] = dea.crs_scores
-            if hasattr(dea, 'vrs_scores'):
-                results_df['VR-SBM效率值'] = dea.vrs_scores
-            if hasattr(dea, 'lambda_sums'):
-                results_df['λ和'] = dea.lambda_sums
+            st.error(f"超效率SBM模型：有 {nan_count} 个DMU无法求解")
         
         # 按效率值降序排列，NaN值放在最后
         results_df = results_df.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
@@ -2514,6 +2451,34 @@ def main():
                         st.info("当前没有可用的变量作为非期望产出。")
                         undesirable_outputs = []
                 
+                # 规模报酬选择（仅对超效率SBM模型显示）
+                rts = 'vrs'  # 默认值
+                if model_info['value'] == 'Super-SBM':
+                    st.markdown("**规模报酬假设选择**")
+                    st.caption("选择规模报酬假设，影响效率值计算和规模报酬分析")
+                    
+                    rts_options = {
+                        "规模报酬可变(VRS)": {
+                            "value": "vrs",
+                        },
+                        "规模报酬不变(CRS)": {
+                            "value": "crs",
+                        }
+                    }
+                    
+                    selected_rts = st.selectbox(
+                        "选择规模报酬假设",
+                        options=list(rts_options.keys()),
+                        index=0,  # 默认选择VRS
+                    )
+                    
+                    rts_info = rts_options[selected_rts]
+                    rts = rts_info['value']
+                    st.markdown(f"**{rts_info['scenario']}**")
+                else:
+                    # 非超效率SBM模型，使用默认的VRS
+                    rts = 'vrs'
+                
                 # 执行分析按钮
                 st.markdown("---")
                 col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1.5, 1.5, 1])
@@ -2527,7 +2492,8 @@ def main():
                                 output_vars, 
                                 model_info['value'],
                                 orientation,
-                                undesirable_outputs
+                                undesirable_outputs,
+                                rts=rts  # 传递规模报酬假设
                             )
                             
                             if results is not None:
@@ -2728,7 +2694,7 @@ def main():
                         st.write(efficiency_stats)
                         
                         # 超效率SBM模型效率值解释
-                        st.markdown("**📋 超效率SBM模型效率值解释**")
+                        st.markdown("**超效率SBM模型效率值解释**")
                         st.markdown("""
                         | 效率值范围 | 含义 | 解读 |
                         |-----------|------|------|
@@ -3509,7 +3475,7 @@ def super_sbm_simple(input_data, output_data, undesirable_outputs=None):
 # 添加正确的超效率SBM实现
 def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs'):
     """
-    修复后的超效率SBM模型实现
+    修复后的超效率SBM模型实现 - 完整支持CRS/VRS
     
     参数:
     - input_data: 投入数据 (n_dmus, n_inputs)
@@ -3547,18 +3513,20 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
         n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable
         
-        # 修复1: 目标函数 - 超效率SBM应为 min t + (1/m)∑(sᵢ⁻/xᵢ₀)
+        # 目标函数：min δ = (1 + (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
         # 使用Charnes-Cooper变换：t = 1 / (1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+        # 目标函数变为：min t + (1/m)∑(sᵢ⁻/xᵢ₀)
         c = np.zeros(n_vars + 1)
         c[n_dmus - 1] = 1  # t的系数
         
-        # 投入松弛变量的系数 - 修复2: 使用正号（超效率SBM）
+        # 投入松弛变量的系数 - 正确：使用正号
         for i in range(n_inputs):
             c[n_dmus - 1 + 1 + i] = 1.0 / (n_inputs * input_data[dmu, i])
         
-        # 修复3: 约束条件 - 超效率SBM的松弛变量符号与标准SBM相反
+        # 修复1: 约束条件 - 使用正确的符号
         
-        # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ + sᵢ⁻
+        # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻ (标准SBM符号)
+        # 超效率SBM中，约束不变，但排除了被评估DMU
         A_eq_inputs = np.zeros((n_inputs, n_vars + 1))
         b_eq_inputs = np.zeros(n_inputs)
         
@@ -3569,10 +3537,10 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_inputs[i, lambda_idx] = input_data[j, i]
                     lambda_idx += 1
-            A_eq_inputs[i, n_dmus - 1 + 1 + i] = -1  # s⁻的系数（修复：使用-1）
+            A_eq_inputs[i, n_dmus - 1 + 1 + i] = 1  # s⁻的系数（正确：使用+1）
             b_eq_inputs[i] = input_data[dmu, i]
         
-        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ - sᵣ⁺
+        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺ (标准SBM符号)
         A_eq_outputs = np.zeros((n_desirable, n_vars + 1))
         b_eq_outputs = np.zeros(n_desirable)
         
@@ -3583,10 +3551,10 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_outputs[r_idx, lambda_idx] = output_data[j, r]
                     lambda_idx += 1
-            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = 1  # s⁺的系数（修复：使用1）
+            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = -1  # s⁺的系数（正确：使用-1）
             b_eq_outputs[r_idx] = output_data[dmu, r]
         
-        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ + sᵤᵤ (非期望产出的约束方向与期望产出相反)
+        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ (注意：与期望产出符号相反)
         A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
         b_eq_undesirable = np.zeros(n_undesirable)
         
@@ -3597,10 +3565,11 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_undesirable[u_idx, lambda_idx] = output_data[j, u]
                     lambda_idx += 1
-            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = -1  # sᵤ的系数（修复：使用-1）
+            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = -1  # sᵤ的系数（正确：使用-1）
             b_eq_undesirable[u_idx] = output_data[dmu, u]
         
-        # 修复4: 归一化约束 - 超效率SBM的归一化约束应为 t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
+        # 修复2: 归一化约束 - 使用正确的公式
+        # t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
         A_eq_norm = np.zeros((1, n_vars + 1))
         A_eq_norm[0, n_dmus - 1] = 1  # t的系数
         
@@ -3610,20 +3579,21 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         
         # 非期望产出项
         for u_idx, u in enumerate(undesirable_indices):
-            A_eq_norm[0, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
+            A_eq_norm[0, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
         
         b_eq_norm = np.array([1])
         
-        # VRS约束：∑λⱼ = 1（仅对VRS模型）
+        # 修复3: 正确实现CRS/VRS约束
+        A_eq_vrs = np.zeros((0, n_vars + 1))
+        b_eq_vrs = np.array([])
+        
         if rts == 'vrs':
+            # VRS约束：∑λⱼ = 1（仅对VRS模型）
             A_eq_vrs = np.zeros((1, n_vars + 1))
             # λ的系数（排除被评估的DMU）
             for j in range(n_dmus - 1):
                 A_eq_vrs[0, j] = 1
             b_eq_vrs = np.array([1])
-        else:
-            A_eq_vrs = np.zeros((0, n_vars + 1))
-            b_eq_vrs = np.array([])
         
         # 合并等式约束
         constraints = [A_eq_inputs, A_eq_outputs]
@@ -3636,7 +3606,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         constraints.append(A_eq_norm)
         b_constraints.append(b_eq_norm)
         
-        # 添加VRS约束（如果适用）
+        # 添加VRS约束（如果适用)
         if rts == 'vrs':
             constraints.append(A_eq_vrs)
             b_constraints.append(b_eq_vrs)
@@ -3650,7 +3620,8 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         # 求解线性规划
         try:
             from scipy.optimize import linprog
-            result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+            result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, 
+                            method='highs', options={'tol': 1e-9, 'maxiter': 5000})
             
             if result.success:
                 t = result.x[n_dmus - 1]
@@ -3660,19 +3631,18 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     
                     # 期望产出松弛变量
                     for r_idx, r in enumerate(desirable_outputs):
-                        slack_outputs[dmu, r] = result.x[n_dmus - 1 + n_inputs + 1 + r_idx] / t
+                        slack_outputs[dmu, r] = -result.x[n_dmus - 1 + n_inputs + 1 + r_idx] / t
                     
                     # 非期望产出松弛变量
                     if n_undesirable > 0:
                         for u_idx, u in enumerate(undesirable_indices):
-                            u_slack = result.x[n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] / t
-                            slack_outputs[dmu, u] = u_slack
+                            slack_outputs[dmu, u] = -result.x[n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] / t
                     
                     # 计算λ和（用于规模报酬判定）
                     lambda_vars = result.x[:n_dmus - 1] / t
                     lambda_sums[dmu] = np.sum(lambda_vars)
                     
-                    # 修复5: 计算超效率SBM效率值 - 使用正确的公式
+                    # 修复4: 计算超效率SBM效率值 - 使用正确的公式
                     # 分子：1 + (1/m)∑(sᵢ⁻/xᵢ₀)
                     input_inefficiency = np.sum(slack_inputs[dmu] / input_data[dmu]) / n_inputs
                     numerator = 1 + input_inefficiency
@@ -3684,35 +3654,34 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     
                     if n_undesirable > 0:
                         for u_idx, u in enumerate(undesirable_indices):
-                            output_inefficiency -= slack_outputs[dmu, u] / output_data[dmu, u]
+                            output_inefficiency += slack_outputs[dmu, u] / output_data[dmu, u]
                     
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                     
-                    # 修复6: 添加分母检查，避免除以零或负数
+                    # 修复5: 添加安全检查，避免分母非正
                     denominator = 1 - output_inefficiency
-                    if denominator <= 0:
-                        print(f"DMU {dmu}: 分母非正 ({denominator:.6f}), 设置为最小值")
+                    if denominator <= 1e-6:
+                        # 如果分母太小，设置为最小值
                         denominator = 1e-6
                     
                     # 计算效率值，允许超过1
                     efficiency_scores[dmu] = numerator / denominator
                     
-                    # 修复7: 确保效率值为正
+                    # 修复6: 确保效率值为正
                     if efficiency_scores[dmu] < 0:
-                        print(f"DMU {dmu}: 效率值为负, 重置为0.001")
                         efficiency_scores[dmu] = 0.001
                 else:
-                    print(f"DMU {dmu}: t值太小 ({t:.2e})，求解失败")
+                    print(f"DMU {dmu+1}: t值太小 ({t:.2e})，求解失败")
                     efficiency_scores[dmu] = np.nan
             else:
-                print(f"DMU {dmu}: 线性规划求解失败")
+                print(f"DMU {dmu+1}: 线性规划求解失败")
                 print(f"  求解状态: {result.status}")
                 print(f"  求解消息: {result.message}")
                 print(f"  目标函数值: {result.fun}")
                 print(f"  迭代次数: {result.nit}")
                 efficiency_scores[dmu] = np.nan
         except Exception as e:
-            print(f"DMU {dmu} 求解失败: {e}")
+            print(f"DMU {dmu+1} 求解失败: {e}")
             print(f"  异常类型: {type(e).__name__}")
             efficiency_scores[dmu] = np.nan
     
@@ -3743,30 +3712,30 @@ def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
             # 方法1：比较CR-SBM和VR-SBM效率值
             if abs(crs_scores[i] - vrs_scores[i]) < 1e-6:
                 # ρ_CRS = ρ_VRS，规模报酬不变
-                rts_status.append("CRS")
-                rts_suggestions.append("当前规模最优")
+                rts_status.append("规模报酬不变(CRS)")
+                rts_suggestions.append("保持当前规模")
             elif crs_scores[i] < vrs_scores[i]:
                 # ρ_CRS < ρ_VRS，规模报酬递减
-                rts_status.append("DRS")
-                rts_suggestions.append("规模过大，应缩小")
+                rts_status.append("规模报酬递减(DRS)")
+                rts_suggestions.append("建议缩小规模")
             else:
                 # ρ_CRS > ρ_VRS，规模报酬递增
-                rts_status.append("IRS")
-                rts_suggestions.append("规模过小，应扩大")
+                rts_status.append("规模报酬递增(IRS)")
+                rts_suggestions.append("建议扩大规模")
             
             # 方法2：基于λ和的Banker判据（补充验证）
             if not np.isnan(lambda_sums[i]):
                 if abs(lambda_sums[i] - 1.0) < 1e-6:
                     # ∑λ = 1，规模报酬不变
-                    if rts_status[-1] != "CRS":
+                    if "CRS" not in rts_status[-1]:
                         rts_status[-1] += " (λ=1)"
                 elif lambda_sums[i] < 1.0:
                     # ∑λ < 1，规模报酬递增
-                    if rts_status[-1] != "IRS":
+                    if "IRS" not in rts_status[-1]:
                         rts_status[-1] += " (λ<1)"
                 else:
                     # ∑λ > 1，规模报酬递减
-                    if rts_status[-1] != "DRS":
+                    if "DRS" not in rts_status[-1]:
                         rts_status[-1] += " (λ>1)"
     
     return rts_status, rts_suggestions
