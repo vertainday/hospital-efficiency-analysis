@@ -1415,20 +1415,58 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
         
         # 根据模型类型和导向执行分析
-        if model_type == 'CCR':
+        if model_type in ['CCR', 'BCC']:
+            # 对于CCR和BCC模型，同时运行两种模型进行效率分解
+            st.info("🔄 正在计算综合效率（CCR模型）...")
             if orientation == 'input':
-                efficiency_scores = dea.ccr_input_oriented()
-            elif orientation == 'output':
-                efficiency_scores = dea.ccr_output_oriented()
+                ccr_scores = dea.ccr_input_oriented()
             else:
-                raise ValueError(f"不支持的导向类型: {orientation}")
-        elif model_type == 'BCC':
+                ccr_scores = dea.ccr_output_oriented()
+            
+            st.info("🔄 正在计算纯技术效率（BCC模型）...")
             if orientation == 'input':
-                efficiency_scores = dea.bcc_input_oriented()
-            elif orientation == 'output':
-                efficiency_scores = dea.bcc_output_oriented()
+                bcc_scores = dea.bcc_input_oriented()
             else:
-                raise ValueError(f"不支持的导向类型: {orientation}")
+                bcc_scores = dea.bcc_output_oriented()
+            
+            # 计算规模效率
+            st.info("🔄 正在计算规模效率...")
+            scale_efficiency = np.zeros(len(ccr_scores))
+            for i in range(len(ccr_scores)):
+                if bcc_scores[i] > 0:
+                    scale_efficiency[i] = ccr_scores[i] / bcc_scores[i]
+                else:
+                    scale_efficiency[i] = 0.0
+            
+            # 确保规模效率在[0,1]范围内
+            scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
+            
+            # 根据选择的模型类型确定主要效率值
+            if model_type == 'CCR':
+                efficiency_scores = ccr_scores
+            else:  # BCC
+                efficiency_scores = bcc_scores
+            
+            # 创建包含三种效率值的结果DataFrame
+            results_dict = {
+                'DMU': dmu_names,
+                '效率值': efficiency_scores,  # 主要效率值（根据选择的模型）
+                '综合效率(TE)': ccr_scores,
+                '纯技术效率(PTE)': bcc_scores,
+                '规模效率(SE)': scale_efficiency
+            }
+            
+            # 添加松弛变量
+            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+                for i in range(len(input_vars)):
+                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
+            
+            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+                for r in range(len(output_vars)):
+                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
+            
+            results = pd.DataFrame(results_dict)
+            
         elif model_type == 'SBM':
             # 处理非期望产出
             if undesirable_outputs:
@@ -1436,6 +1474,24 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             else:
                 # 如果没有非期望产出，使用空列表
                 efficiency_scores = dea.sbm()
+            
+            # 创建SBM结果DataFrame
+            results_dict = {
+                'DMU': dmu_names,
+                '效率值': efficiency_scores
+            }
+            
+            # 添加松弛变量
+            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+                for i in range(len(input_vars)):
+                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
+            
+            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+                for r in range(len(output_vars)):
+                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
+            
+            results = pd.DataFrame(results_dict)
+            
         elif model_type == 'Super-SBM':
             # 处理非期望产出
             if undesirable_outputs:
@@ -1443,6 +1499,24 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             else:
                 # 如果没有非期望产出，使用空列表
                 efficiency_scores = dea.super_sbm()
+            
+            # 创建Super-SBM结果DataFrame
+            results_dict = {
+                'DMU': dmu_names,
+                '效率值': efficiency_scores
+            }
+            
+            # 添加松弛变量
+            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+                for i in range(len(input_vars)):
+                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
+            
+            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+                for r in range(len(output_vars)):
+                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
+            
+            results = pd.DataFrame(results_dict)
+            
         else:
             raise ValueError(f"不支持的模型类型: {model_type}")
         
@@ -2868,16 +2942,13 @@ def main():
                     # 显示结果
                     st.subheader("📊 效率分析结果")
 
-                    # 检查是否有效率分解结果
-                    if 'decomposition_results' in st.session_state:
-                        # 如果有效率分解结果，显示三种效率值
-                        decomposition_results = st.session_state['decomposition_results']
-                        results_display = decomposition_results['results'].copy()
-                        
+                    # 检查结果中是否包含三种效率值
+                    if '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
+                        # 如果包含三种效率值，显示完整的效率分解结果
                         st.markdown("**效率值排名（按综合效率降序排列）**")
                         
                         # 按综合效率降序排序
-                        results_display = results_display.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
+                        results_display = results.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
                         
                         # 格式化效率值
                         results_display['综合效率(TE)'] = results_display['综合效率(TE)'].round(4)
@@ -2918,7 +2989,7 @@ def main():
                         """)
                         
                     else:
-                        # 如果没有效率分解结果，显示单一效率值
+                        # 如果没有三种效率值，显示单一效率值
                         st.markdown("**效率值排名（按效率值降序排列）**")
                         try:
                             results_display = results.copy()
@@ -2956,14 +3027,13 @@ def main():
                         st.markdown('</div>', unsafe_allow_html=True)
                     
                     # 高亮最优DMU
-                    if 'decomposition_results' in st.session_state:
-                        # 如果有效率分解结果，显示综合效率最高的DMU
-                        decomposition_results = st.session_state['decomposition_results']
-                        best_dmu = decomposition_results['results'].iloc[0]
+                    if '综合效率(TE)' in results.columns:
+                        # 如果包含三种效率值，显示综合效率最高的DMU
+                        best_dmu = results.sort_values('综合效率(TE)', ascending=False).iloc[0]
                         st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (综合效率: {best_dmu['综合效率(TE)']:.4f})")
                     else:
-                        # 如果没有效率分解结果，显示单一效率值最高的DMU
-                        best_dmu = results.iloc[0]
+                        # 如果没有三种效率值，显示单一效率值最高的DMU
+                        best_dmu = results.sort_values('效率值', ascending=False).iloc[0]
                         st.markdown(f"🏆 **最优DMU**: {best_dmu['DMU']} (效率值: {best_dmu['效率值']:.3f})")
                     
                     # 创建效率排名图表
@@ -2984,25 +3054,22 @@ def main():
                     
                     # 分析摘要
                     st.subheader("📋 分析摘要")
-                    if 'decomposition_results' in st.session_state:
-                        # 如果有效率分解结果，显示三种效率的指标
-                        decomposition_results = st.session_state['decomposition_results']
-                        results_for_metrics = decomposition_results['results']
-                        
+                    if '综合效率(TE)' in results.columns:
+                        # 如果包含三种效率值，显示三种效率的指标
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
-                            st.metric("分析医院数", len(results_for_metrics))
+                            st.metric("分析医院数", len(results))
                         
                         with col2:
-                            te_efficient_count = len(results_for_metrics[results_for_metrics['综合效率(TE)'] >= 0.9999])
+                            te_efficient_count = len(results[results['综合效率(TE)'] >= 0.9999])
                             st.metric("综合有效医院数", te_efficient_count)
                         
                         with col3:
-                            avg_te = results_for_metrics['综合效率(TE)'].mean()
+                            avg_te = results['综合效率(TE)'].mean()
                             st.metric("平均综合效率", f"{avg_te:.4f}")
                     else:
-                        # 如果没有效率分解结果，显示单一效率值指标
+                        # 如果没有三种效率值，显示单一效率值指标
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
@@ -3018,29 +3085,26 @@ def main():
                     
                     # 效率分布统计
                     st.markdown("**效率值分布统计**")
-                    if 'decomposition_results' in st.session_state:
-                        # 如果有效率分解结果，显示三种效率的统计信息
-                        decomposition_results = st.session_state['decomposition_results']
-                        results_for_stats = decomposition_results['results']
-                        
+                    if '综合效率(TE)' in results.columns:
+                        # 如果包含三种效率值，显示三种效率的统计信息
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
                             st.markdown("**综合效率(TE)统计**")
-                            te_stats = results_for_stats['综合效率(TE)'].describe()
+                            te_stats = results['综合效率(TE)'].describe()
                             st.write(te_stats)
                         
                         with col2:
                             st.markdown("**纯技术效率(PTE)统计**")
-                            pte_stats = results_for_stats['纯技术效率(PTE)'].describe()
+                            pte_stats = results['纯技术效率(PTE)'].describe()
                             st.write(pte_stats)
                         
                         with col3:
                             st.markdown("**规模效率(SE)统计**")
-                            se_stats = results_for_stats['规模效率(SE)'].describe()
+                            se_stats = results['规模效率(SE)'].describe()
                             st.write(se_stats)
                     else:
-                        # 如果没有效率分解结果，显示单一效率值统计
+                        # 如果没有三种效率值，显示单一效率值统计
                         efficiency_stats = results['效率值'].describe()
                         st.write(efficiency_stats)
                     
@@ -3048,35 +3112,47 @@ def main():
                     st.markdown("---")
                     st.subheader("🔬 效率分解分析")
                     
-                    # 检查是否可以进行效率分解
-                    model_type = st.session_state.get('dea_model', 'BCC')
-                    if model_type in ['CCR', 'BCC']:
-                        if st.button("📊 执行效率分解分析", type="primary", help="同时运行CCR和BCC模型，计算综合效率、纯技术效率和规模效率"):
-                            with st.spinner("正在执行效率分解分析..."):
-                                # 获取数据
-                                data = st.session_state.get('uploaded_data')
-                                input_vars = st.session_state.get('selected_input_vars', [])
-                                output_vars = st.session_state.get('selected_output_vars', [])
-                                orientation = st.session_state.get('dea_orientation', 'input')
-                                
-                                if data is not None and input_vars and output_vars:
-                                    # 执行效率分解分析
-                                    decomposition_results = perform_efficiency_decomposition(
-                                        data, input_vars, output_vars, orientation
-                                    )
+                    # 检查是否已经包含效率分解结果
+                    if '综合效率(TE)' in results.columns:
+                        st.info("✅ **效率分解分析已完成**！上面的排名表格已显示综合效率、纯技术效率和规模效率三种效率值。")
+                        st.markdown("""
+                        **效率分解结果说明**：
+                        - **综合效率(TE)**：CCR模型结果，反映整体效率水平
+                        - **纯技术效率(PTE)**：BCC模型结果，反映技术管理水平  
+                        - **规模效率(SE)**：综合效率÷纯技术效率，反映规模合理性
+                        
+                        **数学关系**：综合效率 = 纯技术效率 × 规模效率
+                        """)
+                    else:
+                        # 检查是否可以进行效率分解
+                        model_type = st.session_state.get('dea_model', 'BCC')
+                        if model_type in ['CCR', 'BCC']:
+                            if st.button("📊 执行效率分解分析", type="primary", help="同时运行CCR和BCC模型，计算综合效率、纯技术效率和规模效率"):
+                                with st.spinner("正在执行效率分解分析..."):
+                                    # 获取数据
+                                    data = st.session_state.get('uploaded_data')
+                                    input_vars = st.session_state.get('selected_input_vars', [])
+                                    output_vars = st.session_state.get('selected_output_vars', [])
+                                    orientation = st.session_state.get('dea_orientation', 'input')
                                     
-                                    if decomposition_results:
-                                        # 将效率分解结果保存到session_state中
-                                        st.session_state['decomposition_results'] = decomposition_results
+                                    if data is not None and input_vars and output_vars:
+                                        # 执行效率分解分析
+                                        decomposition_results = perform_efficiency_decomposition(
+                                            data, input_vars, output_vars, orientation
+                                        )
                                         
-                                        # 显示效率分解分析结果
-                                        display_efficiency_decomposition(decomposition_results)
-                                        
-                                        # 提示用户并刷新页面
-                                        st.success("✅ 效率分解分析完成！排名表格已更新，显示三种效率值。")
-                                        st.rerun()  # 刷新页面以更新排名表格
-                                else:
-                                    st.error("❌ 缺少必要的数据或变量选择信息")
+                                        if decomposition_results:
+                                            # 将效率分解结果保存到session_state中
+                                            st.session_state['decomposition_results'] = decomposition_results
+                                            
+                                            # 显示效率分解分析结果
+                                            display_efficiency_decomposition(decomposition_results)
+                                            
+                                            # 提示用户并刷新页面
+                                            st.success("✅ 效率分解分析完成！排名表格已更新，显示三种效率值。")
+                                            st.rerun()  # 刷新页面以更新排名表格
+                                    else:
+                                        st.error("❌ 缺少必要的数据或变量选择信息")
                     
                     # 添加结果解释按钮
                     st.markdown("---")
