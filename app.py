@@ -10,6 +10,8 @@ from scipy.stats import pearsonr
 from scipy.optimize import linprog
 import tempfile
 import os
+import pulp
+from typing import Dict, List, Tuple, Optional, Union
 
 # 检查QCA模块是否可用
 try:
@@ -20,9 +22,546 @@ except ImportError:
     QCA_AVAILABLE = False
     print("⚠️ QCA分析模块不可用")
 
+class DEAData:
+    """DEA数据管理类"""
+    
+    def __init__(self, input_data: np.ndarray, output_data: np.ndarray, 
+                 dmu_names: List[str] = None, input_names: List[str] = None, 
+                 output_names: List[str] = None):
+        """
+        初始化DEA数据
+        
+        Args:
+            input_data: 投入数据 (n_dmu, n_input)
+            output_data: 产出数据 (n_dmu, n_output)
+            dmu_names: DMU名称列表
+            input_names: 投入指标名称列表
+            output_names: 产出指标名称列表
+        """
+        self.input_data = np.array(input_data)
+        self.output_data = np.array(output_data)
+        self.n_dmu, self.n_input = self.input_data.shape
+        self.n_output = self.output_data.shape[1]
+        
+        self.dmu_names = dmu_names or [f"DMU_{i+1}" for i in range(self.n_dmu)]
+        self.input_names = input_names or [f"Input_{i+1}" for i in range(self.n_input)]
+        self.output_names = output_names or [f"Output_{i+1}" for i in range(self.n_output)]
+        
+        # 验证数据
+        if self.input_data.shape[0] != self.output_data.shape[0]:
+            raise ValueError("投入和产出数据的DMU数量必须一致")
+        if np.any(self.input_data <= 0) or np.any(self.output_data <= 0):
+            raise ValueError("所有投入和产出数据必须为正数")
+
+class DEAResult:
+    """DEA结果存储类"""
+    
+    def __init__(self, dmu_names: List[str], input_names: List[str], output_names: List[str]):
+        self.dmu_names = dmu_names
+        self.input_names = input_names
+        self.output_names = output_names
+        
+        self.efficiency_scores = {}
+        self.lambda_variables = {}
+        self.input_slacks = {}
+        self.output_slacks = {}
+        self.input_duals = {}
+        self.output_duals = {}
+        self.status = {}
+        self.orientation = ""
+        
+    def add_result(self, dmu_code: str, efficiency: float, lambda_vars: Dict[str, float],
+                   input_slacks: Dict[str, float] = None, output_slacks: Dict[str, float] = None,
+                   input_duals: Dict[str, float] = None, output_duals: Dict[str, float] = None,
+                   status: str = "Optimal"):
+        """添加单个DMU的结果"""
+        self.efficiency_scores[dmu_code] = efficiency
+        self.lambda_variables[dmu_code] = lambda_vars
+        self.input_slacks[dmu_code] = input_slacks or {}
+        self.output_slacks[dmu_code] = output_slacks or {}
+        self.input_duals[dmu_code] = input_duals or {}
+        self.output_duals[dmu_code] = output_duals or {}
+        self.status[dmu_code] = status
+    
+    def to_dataframe(self) -> pd.DataFrame:
+        """转换为DataFrame格式"""
+        data = []
+        for dmu in self.dmu_names:
+            row = {
+                'DMU': dmu,
+                'Efficiency': self.efficiency_scores.get(dmu, np.nan),
+                'Status': self.status.get(dmu, 'Unknown')
+            }
+            data.append(row)
+        return pd.DataFrame(data)
+
+class CCRModel:
+    """CCR模型实现"""
+    
+    def __init__(self, data: DEAData, orientation: str = 'input'):
+        """
+        初始化CCR模型
+        
+        Args:
+            data: DEA数据
+            orientation: 'input' 或 'output'
+        """
+        self.data = data
+        self.orientation = orientation
+        self.result = DEAResult(data.dmu_names, data.input_names, data.output_names)
+        self.result.orientation = orientation
+    
+    def solve(self) -> DEAResult:
+        """求解CCR模型"""
+        for i, dmu_name in enumerate(self.data.dmu_names):
+            self._solve_single_dmu(i, dmu_name)
+        return self.result
+    
+    def _solve_single_dmu(self, dmu_idx: int, dmu_name: str):
+        """求解单个DMU"""
+        # 创建线性规划问题
+        if self.orientation == 'input':
+            prob = pulp.LpProblem(f"CCR_Input_{dmu_name}", pulp.LpMinimize)
+        else:
+            prob = pulp.LpProblem(f"CCR_Output_{dmu_name}", pulp.LpMaximize)
+        
+        # 创建变量
+        theta = pulp.LpVariable("theta", lowBound=0, upBound=1 if self.orientation == 'input' else None)
+        lambda_vars = pulp.LpVariable.dicts("lambda", self.data.dmu_names, lowBound=0)
+        
+        # 设置目标函数
+        prob += theta
+        
+        # 添加约束
+        if self.orientation == 'input':
+            # 投入导向CCR约束
+            for j in range(self.data.n_input):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) <= theta * self.data.input_data[dmu_idx, j]
+                prob += constraint, f"input_constraint_{j}"
+            
+            for j in range(self.data.n_output):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) >= self.data.output_data[dmu_idx, j]
+                prob += constraint, f"output_constraint_{j}"
+        else:
+            # 产出导向CCR约束
+            for j in range(self.data.n_input):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) <= self.data.input_data[dmu_idx, j]
+                prob += constraint, f"input_constraint_{j}"
+            
+            for j in range(self.data.n_output):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) >= theta * self.data.output_data[dmu_idx, j]
+                prob += constraint, f"output_constraint_{j}"
+        
+        # 求解
+        prob.solve()
+        
+        # 提取结果
+        if prob.status == pulp.LpStatusOptimal:
+            efficiency = pulp.value(theta)
+            if self.orientation == 'output' and efficiency > 0:
+                efficiency = 1.0 / efficiency
+            
+            lambda_vars_dict = {}
+            for dmu in self.data.dmu_names:
+                if lambda_vars[dmu].varValue is not None and abs(lambda_vars[dmu].varValue) > 1e-6:
+                    lambda_vars_dict[dmu] = lambda_vars[dmu].varValue
+            
+            # 提取对偶变量
+            input_duals = {}
+            output_duals = {}
+            
+            for j in range(self.data.n_input):
+                constraint_name = f"input_constraint_{j}"
+                if constraint_name in prob.constraints:
+                    dual_value = prob.constraints[constraint_name].pi
+                    if dual_value is not None:
+                        input_duals[self.data.input_names[j]] = dual_value
+            
+            for j in range(self.data.n_output):
+                constraint_name = f"output_constraint_{j}"
+                if constraint_name in prob.constraints:
+                    dual_value = prob.constraints[constraint_name].pi
+                    if dual_value is not None:
+                        output_duals[self.data.output_names[j]] = dual_value
+            
+            self.result.add_result(dmu_name, efficiency, lambda_vars_dict, 
+                                 input_duals=input_duals, output_duals=output_duals)
+        else:
+            self.result.add_result(dmu_name, float('inf'), {}, status="Infeasible")
+
+class BCCModel:
+    """BCC模型实现（CCR + VRS约束）"""
+    
+    def __init__(self, data: DEAData, orientation: str = 'input'):
+        self.data = data
+        self.orientation = orientation
+        self.result = DEAResult(data.dmu_names, data.input_names, data.output_names)
+        self.result.orientation = orientation
+    
+    def solve(self) -> DEAResult:
+        """求解BCC模型"""
+        for i, dmu_name in enumerate(self.data.dmu_names):
+            self._solve_single_dmu(i, dmu_name)
+        return self.result
+    
+    def _solve_single_dmu(self, dmu_idx: int, dmu_name: str):
+        """求解单个DMU"""
+        # 创建线性规划问题
+        if self.orientation == 'input':
+            prob = pulp.LpProblem(f"BCC_Input_{dmu_name}", pulp.LpMinimize)
+        else:
+            prob = pulp.LpProblem(f"BCC_Output_{dmu_name}", pulp.LpMaximize)
+        
+        # 创建变量
+        theta = pulp.LpVariable("theta", lowBound=0, upBound=1 if self.orientation == 'input' else None)
+        lambda_vars = pulp.LpVariable.dicts("lambda", self.data.dmu_names, lowBound=0)
+        
+        # 设置目标函数
+        prob += theta
+        
+        # 添加约束（与CCR相同）
+        if self.orientation == 'input':
+            for j in range(self.data.n_input):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) <= theta * self.data.input_data[dmu_idx, j]
+                prob += constraint, f"input_constraint_{j}"
+            
+            for j in range(self.data.n_output):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) >= self.data.output_data[dmu_idx, j]
+                prob += constraint, f"output_constraint_{j}"
+        else:
+            for j in range(self.data.n_input):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) <= self.data.input_data[dmu_idx, j]
+                prob += constraint, f"input_constraint_{j}"
+            
+            for j in range(self.data.n_output):
+                constraint = pulp.lpSum([
+                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                    for k in range(self.data.n_dmu)
+                ]) >= theta * self.data.output_data[dmu_idx, j]
+                prob += constraint, f"output_constraint_{j}"
+        
+        # BCC模型特有：VRS约束
+        vrs_constraint = pulp.lpSum([lambda_vars[dmu] for dmu in self.data.dmu_names]) == 1
+        prob += vrs_constraint, "VRS_constraint"
+        
+        # 求解
+        prob.solve()
+        
+        # 提取结果
+        if prob.status == pulp.LpStatusOptimal:
+            efficiency = pulp.value(theta)
+            if self.orientation == 'output' and efficiency > 0:
+                efficiency = 1.0 / efficiency
+            
+            lambda_vars_dict = {}
+            for dmu in self.data.dmu_names:
+                if lambda_vars[dmu].varValue is not None and abs(lambda_vars[dmu].varValue) > 1e-6:
+                    lambda_vars_dict[dmu] = lambda_vars[dmu].varValue
+            
+            # 提取对偶变量
+            input_duals = {}
+            output_duals = {}
+            
+            for j in range(self.data.n_input):
+                constraint_name = f"input_constraint_{j}"
+                if constraint_name in prob.constraints:
+                    dual_value = prob.constraints[constraint_name].pi
+                    if dual_value is not None:
+                        input_duals[self.data.input_names[j]] = dual_value
+            
+            for j in range(self.data.n_output):
+                constraint_name = f"output_constraint_{j}"
+                if constraint_name in prob.constraints:
+                    dual_value = prob.constraints[constraint_name].pi
+                    if dual_value is not None:
+                        output_duals[self.data.output_names[j]] = dual_value
+            
+            self.result.add_result(dmu_name, efficiency, lambda_vars_dict, 
+                                 input_duals=input_duals, output_duals=output_duals)
+        else:
+            self.result.add_result(dmu_name, float('inf'), {}, status="Infeasible")
+
+class SBMModel:
+    """SBM模型实现（基于松弛变量的非径向模型）"""
+    
+    def __init__(self, data: DEAData, orientation: str = 'input'):
+        self.data = data
+        self.orientation = orientation
+        self.result = DEAResult(data.dmu_names, data.input_names, data.output_names)
+        self.result.orientation = orientation
+    
+    def solve(self) -> DEAResult:
+        """求解SBM模型"""
+        for i, dmu_name in enumerate(self.data.dmu_names):
+            self._solve_single_dmu(i, dmu_name)
+        return self.result
+    
+    def _solve_single_dmu(self, dmu_idx: int, dmu_name: str):
+        """求解单个DMU"""
+        # 第一阶段：求解基础DEA模型
+        first_phase_result = self._solve_first_phase(dmu_idx, dmu_name)
+        
+        # 第二阶段：最大化松弛变量
+        second_phase_result = self._solve_second_phase(dmu_idx, dmu_name, first_phase_result)
+        
+        # 合并结果
+        self._merge_results(dmu_name, first_phase_result, second_phase_result)
+    
+    def _solve_first_phase(self, dmu_idx: int, dmu_name: str) -> Dict:
+        """第一阶段：求解基础DEA模型"""
+        prob = pulp.LpProblem(f"SBM_Phase1_{dmu_name}", pulp.LpMinimize)
+        
+        # 创建变量
+        theta = pulp.LpVariable("theta", lowBound=0, upBound=1)
+        lambda_vars = pulp.LpVariable.dicts("lambda", self.data.dmu_names, lowBound=0)
+        
+        # 设置目标函数
+        prob += theta
+        
+        # 添加约束
+        for j in range(self.data.n_input):
+            constraint = pulp.lpSum([
+                lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                for k in range(self.data.n_dmu)
+            ]) <= theta * self.data.input_data[dmu_idx, j]
+            prob += constraint, f"input_constraint_{j}"
+        
+        for j in range(self.data.n_output):
+            constraint = pulp.lpSum([
+                lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                for k in range(self.data.n_dmu)
+            ]) >= self.data.output_data[dmu_idx, j]
+            prob += constraint, f"output_constraint_{j}"
+        
+        # 求解
+        prob.solve()
+        
+        result = {
+            'status': prob.status,
+            'theta': pulp.value(theta) if prob.status == pulp.LpStatusOptimal else None,
+            'lambda_vars': {dmu: lambda_vars[dmu].varValue for dmu in self.data.dmu_names 
+                           if lambda_vars[dmu].varValue is not None and abs(lambda_vars[dmu].varValue) > 1e-6}
+        }
+        return result
+    
+    def _solve_second_phase(self, dmu_idx: int, dmu_name: str, first_phase_result: Dict) -> Dict:
+        """第二阶段：最大化松弛变量"""
+        prob = pulp.LpProblem(f"SBM_Phase2_{dmu_name}", pulp.LpMaximize)
+        
+        # 创建变量
+        lambda_vars = pulp.LpVariable.dicts("lambda", self.data.dmu_names, lowBound=0)
+        input_slacks = pulp.LpVariable.dicts("input_slack", self.data.input_names, lowBound=0)
+        output_slacks = pulp.LpVariable.dicts("output_slack", self.data.output_names, lowBound=0)
+        
+        # 设置目标函数：最大化松弛变量
+        prob += pulp.lpSum(input_slacks.values()) + pulp.lpSum(output_slacks.values())
+        
+        # 添加约束：等式约束
+        for j in range(self.data.n_input):
+            constraint = (self.data.input_data[dmu_idx, j] == 
+                         pulp.lpSum([lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                                   for k in range(self.data.n_dmu)]) + 
+                         input_slacks[self.data.input_names[j]])
+            prob += constraint, f"input_eq_constraint_{j}"
+        
+        for j in range(self.data.n_output):
+            constraint = (self.data.output_data[dmu_idx, j] == 
+                         pulp.lpSum([lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                                   for k in range(self.data.n_dmu)]) - 
+                         output_slacks[self.data.output_names[j]])
+            prob += constraint, f"output_eq_constraint_{j}"
+        
+        # 求解
+        prob.solve()
+        
+        result = {
+            'status': prob.status,
+            'input_slacks': {name: input_slacks[name].varValue for name in self.data.input_names
+                            if input_slacks[name].varValue is not None and abs(input_slacks[name].varValue) > 1e-6},
+            'output_slacks': {name: output_slacks[name].varValue for name in self.data.output_names
+                             if output_slacks[name].varValue is not None and abs(output_slacks[name].varValue) > 1e-6},
+            'lambda_vars': {dmu: lambda_vars[dmu].varValue for dmu in self.data.dmu_names
+                           if lambda_vars[dmu].varValue is not None and abs(lambda_vars[dmu].varValue) > 1e-6}
+        }
+        return result
+    
+    def _merge_results(self, dmu_name: str, first_phase: Dict, second_phase: Dict):
+        """合并两阶段结果"""
+        if first_phase['status'] == pulp.LpStatusOptimal and second_phase['status'] == pulp.LpStatusOptimal:
+            # 计算SBM效率值
+            input_inefficiency = sum(second_phase['input_slacks'].values()) / self.data.n_input
+            output_inefficiency = sum(second_phase['output_slacks'].values()) / self.data.n_output
+            
+            if self.orientation == 'input':
+                efficiency = 1 - input_inefficiency
+            elif self.orientation == 'output':
+                efficiency = 1 + output_inefficiency
+            else:  # non-oriented
+                efficiency = (1 - input_inefficiency) / (1 + output_inefficiency)
+            
+            self.result.add_result(dmu_name, efficiency, second_phase['lambda_vars'],
+                                 input_slacks=second_phase['input_slacks'],
+                                 output_slacks=second_phase['output_slacks'])
+        else:
+            self.result.add_result(dmu_name, float('inf'), {}, status="Infeasible")
+
+class SuperEfficiencySBMModel:
+    """超效率SBM模型实现"""
+    
+    def __init__(self, data: DEAData, orientation: str = 'input'):
+        self.data = data
+        self.orientation = orientation
+        self.result = DEAResult(data.dmu_names, data.input_names, data.output_names)
+        self.result.orientation = orientation
+    
+    def solve(self) -> DEAResult:
+        """求解超效率SBM模型"""
+        for i, dmu_name in enumerate(self.data.dmu_names):
+            self._solve_single_dmu(i, dmu_name)
+        return self.result
+    
+    def _solve_single_dmu(self, dmu_idx: int, dmu_name: str):
+        """求解单个DMU（排除被评估DMU）"""
+        # 特殊情况：只有一个DMU
+        if self.data.n_dmu == 1:
+            self.result.add_result(dmu_name, 1.0, {}, status="Single DMU")
+            return
+        
+        # 创建排除被评估DMU的数据
+        other_dmu_indices = [i for i in range(self.data.n_dmu) if i != dmu_idx]
+        other_dmu_names = [self.data.dmu_names[i] for i in other_dmu_indices]
+        
+        # 第一阶段：求解基础DEA模型（排除被评估DMU）
+        first_phase_result = self._solve_first_phase(dmu_idx, dmu_name, other_dmu_indices, other_dmu_names)
+        
+        # 第二阶段：最大化松弛变量
+        second_phase_result = self._solve_second_phase(dmu_idx, dmu_name, other_dmu_indices, other_dmu_names, first_phase_result)
+        
+        # 合并结果
+        self._merge_results(dmu_name, first_phase_result, second_phase_result)
+    
+    def _solve_first_phase(self, dmu_idx: int, dmu_name: str, other_indices: List[int], other_names: List[str]) -> Dict:
+        """第一阶段：求解基础DEA模型（排除被评估DMU）"""
+        prob = pulp.LpProblem(f"SuperSBM_Phase1_{dmu_name}", pulp.LpMinimize)
+        
+        # 创建变量
+        theta = pulp.LpVariable("theta", lowBound=0, upBound=None)  # 超效率允许 > 1
+        lambda_vars = pulp.LpVariable.dicts("lambda", other_names, lowBound=0)
+        
+        # 设置目标函数
+        prob += theta
+        
+        # 添加约束（排除被评估DMU）
+        for j in range(self.data.n_input):
+            constraint = pulp.lpSum([
+                lambda_vars[other_names[k]] * self.data.input_data[other_indices[k], j]
+                for k in range(len(other_indices))
+            ]) <= theta * self.data.input_data[dmu_idx, j]
+            prob += constraint, f"input_constraint_{j}"
+        
+        for j in range(self.data.n_output):
+            constraint = pulp.lpSum([
+                lambda_vars[other_names[k]] * self.data.output_data[other_indices[k], j]
+                for k in range(len(other_indices))
+            ]) >= self.data.output_data[dmu_idx, j]
+            prob += constraint, f"output_constraint_{j}"
+        
+        # 求解
+        prob.solve()
+        
+        result = {
+            'status': prob.status,
+            'theta': pulp.value(theta) if prob.status == pulp.LpStatusOptimal else None,
+            'lambda_vars': {name: lambda_vars[name].varValue for name in other_names
+                           if lambda_vars[name].varValue is not None and abs(lambda_vars[name].varValue) > 1e-6}
+        }
+        return result
+    
+    def _solve_second_phase(self, dmu_idx: int, dmu_name: str, other_indices: List[int], 
+                           other_names: List[str], first_phase_result: Dict) -> Dict:
+        """第二阶段：最大化松弛变量"""
+        prob = pulp.LpProblem(f"SuperSBM_Phase2_{dmu_name}", pulp.LpMaximize)
+        
+        # 创建变量
+        lambda_vars = pulp.LpVariable.dicts("lambda", other_names, lowBound=0)
+        input_slacks = pulp.LpVariable.dicts("input_slack", self.data.input_names, lowBound=0)
+        output_slacks = pulp.LpVariable.dicts("output_slack", self.data.output_names, lowBound=0)
+        
+        # 设置目标函数：最大化松弛变量
+        prob += pulp.lpSum(input_slacks.values()) + pulp.lpSum(output_slacks.values())
+        
+        # 添加约束：等式约束（排除被评估DMU）
+        for j in range(self.data.n_input):
+            constraint = (self.data.input_data[dmu_idx, j] == 
+                         pulp.lpSum([lambda_vars[other_names[k]] * self.data.input_data[other_indices[k], j]
+                                   for k in range(len(other_indices))]) + 
+                         input_slacks[self.data.input_names[j]])
+            prob += constraint, f"input_eq_constraint_{j}"
+        
+        for j in range(self.data.n_output):
+            constraint = (self.data.output_data[dmu_idx, j] == 
+                         pulp.lpSum([lambda_vars[other_names[k]] * self.data.output_data[other_indices[k], j]
+                                   for k in range(len(other_indices))]) - 
+                         output_slacks[self.data.output_names[j]])
+            prob += constraint, f"output_eq_constraint_{j}"
+        
+        # 求解
+        prob.solve()
+        
+        result = {
+            'status': prob.status,
+            'input_slacks': {name: input_slacks[name].varValue for name in self.data.input_names
+                            if input_slacks[name].varValue is not None and abs(input_slacks[name].varValue) > 1e-6},
+            'output_slacks': {name: output_slacks[name].varValue for name in self.data.output_names
+                             if output_slacks[name].varValue is not None and abs(output_slacks[name].varValue) > 1e-6},
+            'lambda_vars': {name: lambda_vars[name].varValue for name in other_names
+                           if lambda_vars[name].varValue is not None and abs(lambda_vars[name].varValue) > 1e-6}
+        }
+        return result
+    
+    def _merge_results(self, dmu_name: str, first_phase: Dict, second_phase: Dict):
+        """合并两阶段结果"""
+        if first_phase['status'] == pulp.LpStatusOptimal and second_phase['status'] == pulp.LpStatusOptimal:
+            # 计算超效率SBM效率值
+            input_inefficiency = sum(second_phase['input_slacks'].values()) / self.data.n_input
+            output_inefficiency = sum(second_phase['output_slacks'].values()) / self.data.n_output
+            
+            if self.orientation == 'input':
+                efficiency = 1 - input_inefficiency
+            elif self.orientation == 'output':
+                efficiency = 1 + output_inefficiency
+            else:  # non-oriented
+                efficiency = (1 - input_inefficiency) / (1 + output_inefficiency)
+            
+            self.result.add_result(dmu_name, efficiency, second_phase['lambda_vars'],
+                                 input_slacks=second_phase['input_slacks'],
+                                 output_slacks=second_phase['output_slacks'])
+        else:
+            self.result.add_result(dmu_name, float('inf'), {}, status="Infeasible")
 
 class CustomDEA:
-    """完整的DEA实现，使用标准的数学公式和线性规划求解"""
+    """简化的DEA实现，使用新的DEA模型类"""
     
     def __init__(self, input_data, output_data, max_iter=5000, tolerance=1e-9):
         self.input_data = np.array(input_data, dtype=np.float64)
@@ -48,977 +587,224 @@ class CustomDEA:
         self.slack_outputs = None
         self.lambda_values = None
         
-    def _solve_linear_program(self, c, A_ub, b_ub, A_eq, b_eq, bounds=None):
-        """求解线性规划问题 - 详细调试版本"""
-        from scipy.optimize import linprog
+    def ccr_input_oriented(self, method='highs'):
+        """CCR模型 - 输入导向"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        # 尝试多种求解方法
-        methods = ['highs', 'revised simplex', 'interior-point']
+        # 创建CCR模型
+        ccr_model = CCRModel(data, orientation='input')
         
-        for method in methods:
-            try:
-                result = linprog(
-                    c=c,
-                    A_ub=A_ub,
-                    b_ub=b_ub,
-                    A_eq=A_eq,
-                    b_eq=b_eq,
-                    bounds=bounds,
-                    method=method,
-                    options={
-                        'maxiter': self.max_iter,
-                        'tol': self.tolerance
-                    }
-                )
-                
-                # 详细的状态信息
-                status_info = {
-                    'method': method,
-                    'success': result.success,
-                    'status': getattr(result, 'status', 'Unknown'),
-                    'message': getattr(result, 'message', 'No message'),
-                    'fun': getattr(result, 'fun', None),
-                    'x': getattr(result, 'x', None),
-                    'nit': getattr(result, 'nit', None),  # 迭代次数
-                    'slack': getattr(result, 'slack', None),  # 松弛变量
-                    'con': getattr(result, 'con', None)  # 约束违反
-                }
-                
-                print(f"🔍 求解器 {method} 详细信息:")
-                print(f"   ✅ 成功: {status_info['success']}")
-                print(f"   📊 状态码: {status_info['status']}")
-                print(f"   💬 消息: {status_info['message']}")
-                print(f"   🎯 目标值: {status_info['fun']}")
-                print(f"   🔢 迭代次数: {status_info['nit']}")
-                if status_info['x'] is not None:
-                    print(f"   📈 解向量: {status_info['x'][:3]}...")  # 只显示前3个元素
-                if status_info['slack'] is not None:
-                    print(f"   🔗 松弛变量: {status_info['slack'][:3]}...")
-                if status_info['con'] is not None:
-                    print(f"   ⚠️ 约束违反: {status_info['con'][:3]}...")
-                print()
-                
-                # 状态码解释
-                status_explanations = {
-                    0: "Optimal - 找到最优解",
-                    1: "Iteration limit reached - 达到迭代限制",
-                    2: "Infeasible - 问题无可行解",
-                    3: "Unbounded - 问题无界",
-                    4: "Numerical difficulties - 数值困难",
-                    5: "User interrupt - 用户中断",
-                    6: "Other error - 其他错误"
-                }
-                
-                if status_info['status'] in status_explanations:
-                    print(f"   📋 状态解释: {status_explanations[status_info['status']]}")
-                
-                if result.success and result.x is not None:
-                    return result
-                    
-            except Exception as e:
-                print(f"❌ 方法 {method} 异常: {str(e)}")
-                print(f"   异常类型: {type(e).__name__}")
-                continue
+        # 求解
+        result = ccr_model.solve()
         
-        # 如果所有方法都失败，返回一个失败的结果对象
-        class FailedResult:
-            def __init__(self):
-                self.success = False
-                self.message = "所有求解方法都失败"
-                self.x = None
-                self.fun = None
-                self.status = -1
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
         
-        return FailedResult()
-        
-    def _simple_efficiency_calculation(self):
-        """简化的效率计算方法"""
-        import numpy as np
-        
-        # 计算每个DMU的效率值
-        efficiency_scores = np.zeros(self.n_dmus)
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
         for i in range(self.n_dmus):
-            # 计算投入产出比
-            input_sum = np.sum(self.input_data[i, :])
-            output_sum = np.sum(self.output_data[i, :])
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
             
-            if input_sum > 0:
-                efficiency_scores[i] = output_sum / input_sum
-            else:
-                efficiency_scores[i] = 0.0
-        
-        # 标准化效率值（使最大值为1）
-        max_efficiency = np.max(efficiency_scores)
-        if max_efficiency > 0:
-            efficiency_scores = efficiency_scores / max_efficiency
-        
-        return efficiency_scores
-    
-    def ccr_input_oriented(self, method='highs'):
-        """
-        CCR模型 - 输入导向（规模报酬不变）
-        
-        理论定义：
-        - 假定规模报酬不变（CRS: Constant Returns to Scale）
-        - 主要用来测量技术效率（Technical Efficiency）
-        - 技术效率 = 综合效率（包含规模效率和技术效率）
-        
-        数学公式：
-        min θ
-        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
-             ∑(j=1 to n) λⱼyᵣⱼ ≥ yᵣ₀, r = 1,...,s
-             λⱼ ≥ 0, j = 1,...,n
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
-        
-        # 数据预处理：使用更保守的处理方式
-        input_data_processed = np.maximum(self.input_data, 1e-6)  # 使用更大的最小值
-        output_data_processed = np.maximum(self.output_data, 1e-6)
-        
-        for dmu in range(self.n_dmus):
-            try:
-                # 目标函数：min θ
-                c = np.zeros(self.n_dmus + 1)
-                c[0] = 1  # θ的系数
-                
-                # 约束条件
-                # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀ 转换为 ∑λⱼxᵢⱼ - θxᵢ₀ ≤ 0
-                A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
-                b_ub_inputs = np.zeros(self.n_inputs)
-                
-                for i in range(self.n_inputs):
-                    A_ub_inputs[i, 0] = -input_data_processed[dmu, i]  # -θ的系数
-                    A_ub_inputs[i, 1:] = input_data_processed[:, i]    # λ的系数
-                    b_ub_inputs[i] = 0
-                
-                # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀ 转换为 -∑λⱼyᵣⱼ ≤ -yᵣ₀
-                A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
-                b_ub_outputs = np.zeros(self.n_outputs)
-                
-                for r in range(self.n_outputs):
-                    A_ub_outputs[r, 1:] = -output_data_processed[:, r]  # -λ的系数
-                    b_ub_outputs[r] = -output_data_processed[dmu, r]    # -yᵣ₀
-                
-                # 合并约束
-                A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
-                b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
-                
-                # 变量边界：θ ≥ 0, λⱼ ≥ 0
-                bounds = [(0, None)] * (self.n_dmus + 1)
-                
-                # 求解线性规划
-                result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
-                
-                if result and result.success and result.x is not None:
-                    efficiency_scores[dmu] = max(0.0, min(1.0, result.x[0]))  # 确保在[0,1]范围内
-                    lambda_values[dmu] = result.x[1:]
-                    
-                    # 计算松弛变量
-                    for i in range(self.n_inputs):
-                        slack_inputs[dmu, i] = max(0, 
-                            np.sum(lambda_values[dmu] * input_data_processed[:, i]) - 
-                            efficiency_scores[dmu] * input_data_processed[dmu, i])
-                    
-                    for r in range(self.n_outputs):
-                        slack_outputs[dmu, r] = max(0,
-                            output_data_processed[dmu, r] - 
-                            np.sum(lambda_values[dmu] * output_data_processed[:, r]))
-                else:
-                    # 如果求解失败，显示详细的错误信息
-                    print(f"❌ DMU {dmu} 线性规划求解失败!")
-                    print(f"   📊 状态码: {getattr(result, 'status', 'Unknown')}")
-                    print(f"   💬 错误消息: {getattr(result, 'message', 'No message')}")
-                    print(f"   🎯 目标值: {getattr(result, 'fun', 'None')}")
-                    
-                    # 状态码解释
-                    status_explanations = {
-                        0: "Optimal - 找到最优解",
-                        1: "Iteration limit reached - 达到迭代限制",
-                        2: "Infeasible - 问题无可行解",
-                        3: "Unbounded - 问题无界", 
-                        4: "Numerical difficulties - 数值困难",
-                        5: "User interrupt - 用户中断",
-                        6: "Other error - 其他错误"
-                    }
-                    
-                    status = getattr(result, 'status', -1)
-                    if status in status_explanations:
-                        print(f"   📋 问题类型: {status_explanations[status]}")
-                    
-                    # 分析可能的原因
-                    print(f"   🔍 可能原因分析:")
-                    if status == 2:  # Infeasible
-                        print(f"      - 约束条件过于严格，没有可行解")
-                        print(f"      - 检查投入产出数据是否合理")
-                        print(f"      - 可能存在数据异常或量纲问题")
-                    elif status == 3:  # Unbounded
-                        print(f"      - 目标函数可以无限优化")
-                        print(f"      - 检查约束条件是否完整")
-                    elif status == 4:  # Numerical difficulties
-                        print(f"      - 数值计算不稳定")
-                        print(f"      - 数据可能存在极值或量纲差异过大")
-                        print(f"      - 建议检查数据预处理")
-                    
-                    # 显示当前DMU的数据信息
-                    print(f"   📈 DMU {dmu} 数据信息:")
-                    print(f"      - 投入数据: {input_data_processed[dmu, :]}")
-                    print(f"      - 产出数据: {output_data_processed[dmu, :]}")
-                    print(f"      - 投入总和: {np.sum(input_data_processed[dmu, :]):.4f}")
-                    print(f"      - 产出总和: {np.sum(output_data_processed[dmu, :]):.4f}")
-                    
-                    # 不设置效率值，让用户看到真实的求解器问题
-                    efficiency_scores[dmu] = np.nan  # 使用NaN表示求解失败
-                    print(f"   效率值设置为 NaN，表示求解失败")
-                    print()
-                    
-            except Exception as e:
-                # 异常处理：显示详细的异常信息
-                print(f"❌ DMU {dmu} 发生异常!")
-                print(f"   🚨 异常类型: {type(e).__name__}")
-                print(f"   💬 异常消息: {str(e)}")
-                print(f"   📈 DMU {dmu} 数据信息:")
-                print(f"      - 投入数据: {input_data_processed[dmu, :]}")
-                print(f"      - 产出数据: {output_data_processed[dmu, :]}")
-                print(f"   ⚠️ 效率值设置为 NaN，表示计算异常")
-                print()
-                
-                # 不设置效率值，让用户看到真实的异常问题
-                efficiency_scores[dmu] = np.nan  # 使用NaN表示计算异常
-        
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
     
     def ccr_output_oriented(self, method='highs'):
-        """
-        CCR模型 - 输出导向（规模报酬不变）
+        """CCR模型 - 输出导向"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        理论定义：
-        - 假定规模报酬不变（CRS: Constant Returns to Scale）
-        - 主要用来测量技术效率（Technical Efficiency）
-        - 技术效率 = 综合效率（包含规模效率和技术效率）
+        # 创建CCR模型
+        ccr_model = CCRModel(data, orientation='output')
         
-        数学公式：
-        max φ
-        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ xᵢ₀, i = 1,...,m
-             ∑(j=1 to n) λⱼyᵣⱼ ≥ φyᵣ₀, r = 1,...,s
-             λⱼ ≥ 0, j = 1,...,n
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        # 求解
+        result = ccr_model.solve()
         
-        for dmu in range(self.n_dmus):
-            # 目标函数：max φ = min -φ
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = -1  # φ的系数（负号因为求最大值）
-            
-            # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀ 转换为 ∑λⱼxᵢⱼ - xᵢ₀ ≤ 0
-            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
-            b_ub_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                A_ub_inputs[i, 1:] = self.input_data[:, i]    # λ的系数
-                b_ub_inputs[i] = self.input_data[dmu, i]     # xᵢ₀
-                
-            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀ 转换为 -∑λⱼyᵣⱼ + φyᵣ₀ ≤ 0
-            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
-            b_ub_outputs = np.zeros(self.n_outputs)
-            
-            for r in range(self.n_outputs):
-                A_ub_outputs[r, 0] = self.output_data[dmu, r]   # φ的系数
-                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λ的系数
-                b_ub_outputs[r] = 0
-            
-            # 合并约束
-            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
-            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
-            
-            # 变量边界：φ ≥ 0, λⱼ ≥ 0
-            bounds = [(0, None)] * (self.n_dmus + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, A_ub, b_ub, None, None, bounds)
-            
-            if result and result.success:
-                phi = result.x[0]
-                # CCR输出导向模型：效率值 = 1/φ，确保在[0,1]范围内
-                efficiency_scores[dmu] = max(0.0, min(1.0, 1.0 / phi if phi > 0 else 1.0))
-                lambda_values[dmu] = result.x[1:]
-                
-                # 计算松弛变量
-                for i in range(self.n_inputs):
-                    slack_inputs[dmu, i] = max(0, 
-                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
-                        self.input_data[dmu, i])
-                
-                for r in range(self.n_outputs):
-                    slack_outputs[dmu, r] = max(0,
-                        phi * self.output_data[dmu, r] - 
-                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
-            else:
-                # 求解失败，不设置默认值
-                efficiency_scores[dmu] = np.nan
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
         
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for i in range(self.n_dmus):
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
+            
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
     
     def bcc_input_oriented(self, method='highs'):
-        """
-        BCC模型 - 输入导向（规模报酬可变）
+        """BCC模型 - 输入导向"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        理论定义：
-        - 假定规模报酬可变（VRS: Variable Returns to Scale）
-        - 主要测算纯技术效率（Pure Technical Efficiency）
-        - 纯技术效率 = 技术效率与规模效率的比值
-        - 可以分离技术效率和规模效率的影响
+        # 创建BCC模型
+        bcc_model = BCCModel(data, orientation='input')
         
-        数学公式：
-        min θ
-        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ θxᵢ₀, i = 1,...,m
-             ∑(j=1 to n) λⱼyᵣⱼ ≥ yᵣ₀, r = 1,...,s
-             ∑(j=1 to n) λⱼ = 1  (规模报酬可变约束)
-             λⱼ ≥ 0, j = 1,...,n
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        # 求解
+        result = bcc_model.solve()
         
-        for dmu in range(self.n_dmus):
-            # 目标函数：min θ
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = 1  # θ的系数
-            
-            # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ θxᵢ₀ 转换为 ∑λⱼxᵢⱼ - θxᵢ₀ ≤ 0
-            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
-            b_ub_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                A_ub_inputs[i, 0] = -self.input_data[dmu, i]  # -θxᵢ₀的系数
-                A_ub_inputs[i, 1:] = self.input_data[:, i]   # λⱼxᵢⱼ的系数
-                b_ub_inputs[i] = 0
-            
-            # 产出约束：∑λⱼyᵣⱼ ≥ yᵣ₀ 转换为 -∑λⱼyᵣⱼ ≤ -yᵣ₀
-            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
-            b_ub_outputs = np.zeros(self.n_outputs)
-            
-            for r in range(self.n_outputs):
-                A_ub_outputs[r, 0] = 0  # θ的系数为0
-                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λⱼyᵣⱼ的系数
-                b_ub_outputs[r] = -self.output_data[dmu, r]   # -yᵣ₀
-            
-            # 规模报酬可变约束：∑λⱼ = 1
-            A_eq = np.zeros((1, self.n_dmus + 1))
-            A_eq[0, 1:] = 1  # λ的系数
-            b_eq = np.array([1])
-            
-            # 合并约束
-            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
-            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
-            
-            # 变量边界：θ ≥ 0, λⱼ ≥ 0
-            bounds = [(0, None)] * (self.n_dmus + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, A_ub, b_ub, A_eq, b_eq, bounds)
-            
-            if result and result.success:
-                # BCC模型效率值应该在[0,1]范围内
-                efficiency_scores[dmu] = min(max(result.x[0], 0.0), 1.0)
-                lambda_values[dmu] = result.x[1:]
-                
-                # 计算松弛变量
-                for i in range(self.n_inputs):
-                    slack_inputs[dmu, i] = max(0, 
-                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
-                        efficiency_scores[dmu] * self.input_data[dmu, i])
-                
-                for r in range(self.n_outputs):
-                    slack_outputs[dmu, r] = max(0,
-                        self.output_data[dmu, r] - 
-                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
-            else:
-                # 求解失败，不设置默认值
-                efficiency_scores[dmu] = np.nan
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
         
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for i in range(self.n_dmus):
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
+            
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
     
     def bcc_output_oriented(self, method='highs'):
-        """
-        BCC模型 - 输出导向（规模报酬可变）
+        """BCC模型 - 输出导向"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        理论定义：
-        - 假定规模报酬可变（VRS: Variable Returns to Scale）
-        - 主要测算纯技术效率（Pure Technical Efficiency）
-        - 纯技术效率 = 技术效率与规模效率的比值
-        - 可以分离技术效率和规模效率的影响
+        # 创建BCC模型
+        bcc_model = BCCModel(data, orientation='output')
         
-        数学公式：
-        max φ
-        s.t. ∑(j=1 to n) λⱼxᵢⱼ ≤ xᵢ₀, i = 1,...,m
-             ∑(j=1 to n) λⱼyᵣⱼ ≥ φyᵣ₀, r = 1,...,s
-             ∑(j=1 to n) λⱼ = 1  (规模报酬可变约束)
-             λⱼ ≥ 0, j = 1,...,n
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        # 求解
+        result = bcc_model.solve()
         
-        for dmu in range(self.n_dmus):
-            # 目标函数：max φ = min -φ
-            c = np.zeros(self.n_dmus + 1)
-            c[0] = -1  # φ的系数（负号因为求最大值）
-            
-            # 约束条件
-            # 投入约束：∑λⱼxᵢⱼ ≤ xᵢ₀ 转换为 ∑λⱼxᵢⱼ - xᵢ₀ ≤ 0
-            A_ub_inputs = np.zeros((self.n_inputs, self.n_dmus + 1))
-            b_ub_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                A_ub_inputs[i, 0] = 0  # φ的系数为0
-                A_ub_inputs[i, 1:] = self.input_data[:, i]   # λⱼxᵢⱼ的系数
-                b_ub_inputs[i] = self.input_data[dmu, i]     # xᵢ₀
-            
-            # 产出约束：∑λⱼyᵣⱼ ≥ φyᵣ₀ 转换为 -∑λⱼyᵣⱼ + φyᵣ₀ ≤ 0
-            A_ub_outputs = np.zeros((self.n_outputs, self.n_dmus + 1))
-            b_ub_outputs = np.zeros(self.n_outputs)
-            
-            for r in range(self.n_outputs):
-                A_ub_outputs[r, 0] = self.output_data[dmu, r]  # φyᵣ₀的系数
-                A_ub_outputs[r, 1:] = -self.output_data[:, r]  # -λⱼyᵣⱼ的系数
-                b_ub_outputs[r] = 0
-            
-            # 规模报酬可变约束：∑λⱼ = 1
-            A_eq = np.zeros((1, self.n_dmus + 1))
-            A_eq[0, 1:] = 1  # λ的系数
-            b_eq = np.array([1])
-            
-            # 合并约束
-            A_ub = np.vstack([A_ub_inputs, A_ub_outputs])
-            b_ub = np.hstack([b_ub_inputs, b_ub_outputs])
-            
-            # 变量边界：φ ≥ 0, λⱼ ≥ 0
-            bounds = [(0, None)] * (self.n_dmus + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, A_ub, b_ub, A_eq, b_eq, bounds)
-            
-            if result and result.success:
-                phi = result.x[0]
-                # BCC输出导向模型：效率值 = 1/φ，确保在[0,1]范围内
-                if phi > 0:
-                    efficiency_scores[dmu] = max(0.0, min(1.0, 1.0 / phi))
-                else:
-                    efficiency_scores[dmu] = 1.0
-                lambda_values[dmu] = result.x[1:]
-                
-                # 计算松弛变量
-                for i in range(self.n_inputs):
-                    slack_inputs[dmu, i] = max(0, 
-                        np.sum(lambda_values[dmu] * self.input_data[:, i]) - 
-                        self.input_data[dmu, i])
-                
-                for r in range(self.n_outputs):
-                    slack_outputs[dmu, r] = max(0,
-                        phi * self.output_data[dmu, r] - 
-                        np.sum(lambda_values[dmu] * self.output_data[:, r]))
-            else:
-                # 求解失败，不设置默认值
-                efficiency_scores[dmu] = np.nan
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
         
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for i in range(self.n_dmus):
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
+            
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
     
     def sbm(self, undesirable_outputs=None, method='highs'):
-        """
-        SBM模型 - 基于松弛变量的效率测量模型
+        """SBM模型"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        数学公式：
-        min ρ = (1 - (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(r=1 to s)(sᵣ⁺/yᵣ₀))
-        s.t. x₀ = Xλ + s⁻
-             y₀ = Yλ - s⁺
-             λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        # 创建SBM模型
+        sbm_model = SBMModel(data, orientation='input')
         
-        for dmu in range(self.n_dmus):
-            # 变量：λ (n个), s⁻ (m个), s⁺ (s个)
-            n_vars = self.n_dmus + self.n_inputs + self.n_outputs
-            
-            # 目标函数：min ρ
-            # 这是一个分式规划，需要转换为线性规划
-            # 使用Charnes-Cooper变换
-            
-            # 辅助变量 t
-            c = np.zeros(n_vars + 1)
-            c[self.n_dmus] = 1  # t的系数
-            
-            # 约束条件
-            # 投入约束：tx₀ = tXλ + ts⁻
-            A_eq_inputs = np.zeros((self.n_inputs, n_vars + 1))
-            b_eq_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                A_eq_inputs[i, self.n_dmus] = self.input_data[dmu, i]  # t的系数
-                A_eq_inputs[i, :self.n_dmus] = -self.input_data[:, i]  # λ的系数
-                A_eq_inputs[i, self.n_dmus + 1 + i] = -1  # s⁻的系数
-                b_eq_inputs[i] = self.input_data[dmu, i]
-            
-            # 产出约束：ty₀ = tYλ - ts⁺
-            A_eq_outputs = np.zeros((self.n_outputs, n_vars + 1))
-            b_eq_outputs = np.zeros(self.n_outputs)
-            
-            for r in range(self.n_outputs):
-                A_eq_outputs[r, self.n_dmus] = self.output_data[dmu, r]  # t的系数
-                A_eq_outputs[r, :self.n_dmus] = -self.output_data[:, r]  # λ的系数
-                A_eq_outputs[r, self.n_dmus + self.n_inputs + 1 + r] = 1  # s⁺的系数
-                b_eq_outputs[r] = self.output_data[dmu, r]
-            
-            # 归一化约束：t - (1/m)∑(sᵢ⁻/xᵢ₀) - (1/s)∑(sᵣ⁺/yᵣ₀) = 1
-            A_eq_norm = np.zeros((1, n_vars + 1))
-            A_eq_norm[0, self.n_dmus] = 1  # t的系数
-            
-            for i in range(self.n_inputs):
-                A_eq_norm[0, self.n_dmus + 1 + i] = -1.0 / (self.n_inputs * self.input_data[dmu, i])
-            
-            for r in range(self.n_outputs):
-                A_eq_norm[0, self.n_dmus + self.n_inputs + 1 + r] = -1.0 / (self.n_outputs * self.output_data[dmu, r])
-            
-            b_eq_norm = np.array([1])
-            
-            # 合并等式约束
-            A_eq = np.vstack([A_eq_inputs, A_eq_outputs, A_eq_norm])
-            b_eq = np.hstack([b_eq_inputs, b_eq_outputs, b_eq_norm])
-            
-            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, t ≥ 0
-            bounds = [(0, None)] * (n_vars + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, None, None, A_eq, b_eq, bounds)
-            
-            if result and result.success:
-                t = result.x[self.n_dmus]
-                lambda_values[dmu] = result.x[:self.n_dmus] / t if t > 0 else result.x[:self.n_dmus]
-                slack_inputs[dmu] = result.x[self.n_dmus + 1:self.n_dmus + 1 + self.n_inputs] / t if t > 0 else result.x[self.n_dmus + 1:self.n_dmus + 1 + self.n_inputs]
-                slack_outputs[dmu] = result.x[self.n_dmus + self.n_inputs + 1:] / t if t > 0 else result.x[self.n_dmus + self.n_inputs + 1:]
-                
-                # 计算SBM效率值
-                input_inefficiency = np.sum(slack_inputs[dmu] / self.input_data[dmu]) / self.n_inputs
-                output_inefficiency = np.sum(slack_outputs[dmu] / self.output_data[dmu]) / self.n_outputs
-                
-                efficiency_scores[dmu] = (1 - input_inefficiency) / (1 + output_inefficiency)
-            else:
-                # 求解失败，不设置默认值
-                efficiency_scores[dmu] = np.nan
+        # 求解
+        result = sbm_model.solve()
         
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
+        
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        
+        for i in range(self.n_dmus):
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
+            
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
     
     def super_sbm_old(self, undesirable_outputs=None, method='highs'):
-        """
-        超效率SBM模型 - 允许效率值大于1
+        """超效率SBM模型"""
+        # 创建DEA数据对象
+        data = DEAData(self.input_data, self.output_data)
         
-        数学公式：
-        min ρ* = (1 - (1/m)∑(i=1 to m)(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(r=1 to s)(sᵣ⁺/yᵣ₀) + ∑(p=1 to d)(sᵤᵤ/uᵤ₀)))
-        s.t. ∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻, i=1,...,m
-             ∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺, r=1,...,s
-             ∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ, p=1,...,d
-             λⱼ ≥ 0, sᵢ⁻ ≥ 0, sᵣ⁺ ≥ 0, sᵤᵤ ≥ 0
-             (排除被评估的DMU)
+        # 创建超效率SBM模型
+        super_sbm_model = SuperEfficiencySBMModel(data, orientation='input')
         
-        注意：超效率SBM模型允许效率值大于1，用于对有效DMU进行进一步排序
-        """
-        efficiency_scores = np.zeros(self.n_dmus)
-        slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        lambda_values = np.zeros((self.n_dmus, self.n_dmus))
+        # 求解
+        result = super_sbm_model.solve()
         
-        # 处理非期望产出
-        if undesirable_outputs is not None and len(undesirable_outputs) > 0:
-            # undesirable_outputs现在是索引列表
-            undesirable_indices = undesirable_outputs
-            
-            # 分离期望产出和非期望产出
-            desirable_outputs = [var for var in range(self.n_outputs) if var not in undesirable_indices]
-            n_desirable = len(desirable_outputs)
-            n_undesirable = len(undesirable_indices)
-        else:
-            # 所有产出都是期望产出
-            desirable_outputs = list(range(self.n_outputs))
-            n_desirable = self.n_outputs
-            n_undesirable = 0
-            undesirable_indices = []
+        # 提取效率值
+        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
+                                    for i in range(self.n_dmus)])
         
-        for dmu in range(self.n_dmus):
-            # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
-            n_vars = self.n_dmus - 1 + self.n_inputs + n_desirable + n_undesirable
-            
-            # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
-            # 使用Charnes-Cooper变换：t = 1 / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
-            # 目标函数变为：min t - (1/m)∑(sᵢ⁻/xᵢ₀)
-            c = np.zeros(n_vars + 1)
-            c[self.n_dmus - 1] = 1  # t的系数
-            
-            # 投入松弛变量的系数
-            for i in range(self.n_inputs):
-                c[self.n_dmus - 1 + 1 + i] = -1.0 / (self.n_inputs * self.input_data[dmu, i])
-            
-            # 约束条件
-            # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
-            A_eq_inputs = np.zeros((self.n_inputs, n_vars + 1))
-            b_eq_inputs = np.zeros(self.n_inputs)
-            
-            for i in range(self.n_inputs):
-                # λ的系数（排除被评估的DMU）
-                lambda_idx = 0
-                for j in range(self.n_dmus):
-                    if j != dmu:
-                        A_eq_inputs[i, lambda_idx] = self.input_data[j, i]
-                        lambda_idx += 1
-                A_eq_inputs[i, self.n_dmus - 1 + 1 + i] = 1  # s⁻的系数
-                b_eq_inputs[i] = self.input_data[dmu, i]
-            
-            # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
-            A_eq_outputs = np.zeros((n_desirable, n_vars + 1))
-            b_eq_outputs = np.zeros(n_desirable)
-            
-            for r_idx, r in enumerate(desirable_outputs):
-                # λ的系数（排除被评估的DMU）
-                lambda_idx = 0
-                for j in range(self.n_dmus):
-                    if j != dmu:
-                        A_eq_outputs[r_idx, lambda_idx] = self.output_data[j, r]
-                        lambda_idx += 1
-                A_eq_outputs[r_idx, self.n_dmus - 1 + self.n_inputs + 1 + r_idx] = -1  # s⁺的系数
-                b_eq_outputs[r_idx] = self.output_data[dmu, r]
-            
-            # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
-            A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
-            b_eq_undesirable = np.zeros(n_undesirable)
-            
-            for u_idx, u in enumerate(undesirable_indices):
-                # λ的系数（排除被评估的DMU）
-                lambda_idx = 0
-                for j in range(self.n_dmus):
-                    if j != dmu:
-                        A_eq_undesirable[u_idx, lambda_idx] = self.output_data[j, u]
-                        lambda_idx += 1
-                A_eq_undesirable[u_idx, self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] = 1  # sᵤ的系数
-                b_eq_undesirable[u_idx] = self.output_data[dmu, u]
-            
-            # 归一化约束：t + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
-            A_eq_norm = np.zeros((1, n_vars + 1))
-            A_eq_norm[0, self.n_dmus - 1] = 1  # t的系数
-            
-            # 期望产出项
-            for r_idx, r in enumerate(desirable_outputs):
-                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, r])
-            
-            # 非期望产出项
-            for u_idx, u in enumerate(undesirable_indices):
-                A_eq_norm[0, self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * self.output_data[dmu, u])
-            
-            b_eq_norm = np.array([1])
-            
-            # 合并等式约束
-            constraints = [A_eq_inputs, A_eq_outputs]
-            b_constraints = [b_eq_inputs, b_eq_outputs]
-            
-            if n_undesirable > 0:
-                constraints.append(A_eq_undesirable)
-                b_constraints.append(b_eq_undesirable)
-            
-            constraints.append(A_eq_norm)
-            b_constraints.append(b_eq_norm)
-            
-            A_eq = np.vstack(constraints)
-            b_eq = np.hstack(b_constraints)
-            
-            # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
-            bounds = [(0, None)] * (n_vars + 1)
-            
-            # 求解线性规划
-            result = self._solve_linear_program(c, None, None, A_eq, b_eq, bounds)
-            
-            if result and result.success:
-                t = result.x[self.n_dmus - 1]
-                # 重构λ向量（包含被评估的DMU位置）
-                lambda_temp = result.x[:self.n_dmus - 1] / t if t > 0 else result.x[:self.n_dmus - 1]
-                lambda_idx = 0
-                for j in range(self.n_dmus):
-                    if j != dmu:
-                        lambda_values[dmu, j] = lambda_temp[lambda_idx]
-                        lambda_idx += 1
-                
-                # 提取松弛变量
-                slack_inputs[dmu] = result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs] / t if t > 0 else result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs]
-                
-                # 期望产出松弛变量
-                for r_idx, r in enumerate(desirable_outputs):
-                    slack_outputs[dmu, r] = result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx]
-                
-                # 计算超效率SBM效率值
-                # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
-                input_inefficiency = np.sum(slack_inputs[dmu] / self.input_data[dmu]) / self.n_inputs
-                numerator = 1 - input_inefficiency
-                
-                # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
-                output_inefficiency = 0
-                for r_idx, r in enumerate(desirable_outputs):
-                    output_inefficiency += slack_outputs[dmu, r] / self.output_data[dmu, r]
-                
-                if n_undesirable > 0:
-                    for u_idx, u in enumerate(undesirable_indices):
-                        u_slack = result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] / t if t > 0 else result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx]
-                        output_inefficiency += u_slack / self.output_data[dmu, u]
-                
-                output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-                denominator = 1 + output_inefficiency
-                
-                efficiency_scores[dmu] = numerator / denominator
-            else:
-                # 求解失败，尝试自动修复
-                efficiency_scores[dmu] = self._auto_fix_and_resolve(dmu, c, A_eq, b_eq, bounds, 
-                                                                   desirable_outputs, undesirable_indices, 
-                                                                   n_desirable, n_undesirable)
+        # 提取松弛变量和lambda值
+        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
+        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
+        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
-        self.slack_inputs = slack_inputs
-        self.slack_outputs = slack_outputs
-        self.lambda_values = lambda_values
+        for i in range(self.n_dmus):
+            dmu_name = f"DMU_{i+1}"
+            if dmu_name in result.input_slacks:
+                for j, input_name in enumerate(data.input_names):
+                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
+            
+            if dmu_name in result.output_slacks:
+                for j, output_name in enumerate(data.output_names):
+                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
+            
+            if dmu_name in result.lambda_variables:
+                for j, other_dmu in enumerate(data.dmu_names):
+                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
         
         return efficiency_scores
-    
-    def _auto_fix_and_resolve(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """自动修复并重新求解"""
-        print(f"🔧 DMU {dmu} 求解失败，尝试自动修复...")
-        
-        # 修复策略1：数据标准化
-        try:
-            print(f"   尝试策略1：数据标准化...")
-            fixed_result = self._try_with_normalized_data(dmu, c, A_eq, b_eq, bounds, 
-                                                       desirable_outputs, undesirable_indices, 
-                                                       n_desirable, n_undesirable)
-            if fixed_result is not None:
-                print(f"   ✅ 策略1成功：数据标准化修复成功")
-                return fixed_result
-        except Exception as e:
-            print(f"   ❌ 策略1失败：{e}")
-        
-        # 修复策略2：零值处理
-        try:
-            print(f"   尝试策略2：零值处理...")
-            fixed_result = self._try_with_zero_handling(dmu, c, A_eq, b_eq, bounds, 
-                                                     desirable_outputs, undesirable_indices, 
-                                                     n_desirable, n_undesirable)
-            if fixed_result is not None:
-                print(f"   ✅ 策略2成功：零值处理修复成功")
-                return fixed_result
-        except Exception as e:
-            print(f"   ❌ 策略2失败：{e}")
-        
-        # 修复策略3：简化约束
-        try:
-            print(f"   尝试策略3：简化约束...")
-            fixed_result = self._try_with_simplified_constraints(dmu, c, A_eq, b_eq, bounds, 
-                                                               desirable_outputs, undesirable_indices, 
-                                                               n_desirable, n_undesirable)
-            if fixed_result is not None:
-                print(f"   ✅ 策略3成功：简化约束修复成功")
-                return fixed_result
-        except Exception as e:
-            print(f"   ❌ 策略3失败：{e}")
-        
-        # 修复策略4：调整求解器参数
-        try:
-            print(f"   尝试策略4：调整求解器参数...")
-            fixed_result = self._try_with_adjusted_solver(dmu, c, A_eq, b_eq, bounds, 
-                                                       desirable_outputs, undesirable_indices, 
-                                                       n_desirable, n_undesirable)
-            if fixed_result is not None:
-                print(f"   ✅ 策略4成功：调整求解器参数修复成功")
-                return fixed_result
-        except Exception as e:
-            print(f"   ❌ 策略4失败：{e}")
-        
-        # 所有策略都失败，说明数据有根本性问题
-        print(f"   ❌ 所有修复策略都失败，数据可能存在问题")
-        return np.nan  # 返回NaN，让用户知道需要检查数据
-    
-    def _try_with_normalized_data(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """尝试使用标准化数据重新求解"""
-        # 标准化投入和产出数据
-        normalized_input = self.input_data.copy()
-        normalized_output = self.output_data.copy()
-        
-        # Min-Max标准化
-        for i in range(self.n_inputs):
-            min_val = np.min(normalized_input[:, i])
-            max_val = np.max(normalized_input[:, i])
-            if max_val > min_val:
-                normalized_input[:, i] = (normalized_input[:, i] - min_val) / (max_val - min_val)
-        
-        for r in range(self.n_outputs):
-            min_val = np.min(normalized_output[:, r])
-            max_val = np.max(normalized_output[:, r])
-            if max_val > min_val:
-                normalized_output[:, r] = (normalized_output[:, r] - min_val) / (max_val - min_val)
-        
-        # 重新构建约束矩阵
-        A_eq_fixed = A_eq.copy()
-        b_eq_fixed = b_eq.copy()
-        
-        # 更新约束中的系数
-        for i in range(self.n_inputs):
-            for j in range(self.n_dmus):
-                if j != dmu:
-                    lambda_idx = j if j < dmu else j - 1
-                    A_eq_fixed[i, lambda_idx] = normalized_input[j, i]
-        
-        for r_idx, r in enumerate(desirable_outputs):
-            for j in range(self.n_dmus):
-                if j != dmu:
-                    lambda_idx = j if j < dmu else j - 1
-                    A_eq_fixed[self.n_inputs + r_idx, lambda_idx] = normalized_output[j, r]
-        
-        # 重新求解
-        result = self._solve_linear_program(c, None, None, A_eq_fixed, b_eq_fixed, bounds)
-        if result and result.success:
-            return self._calculate_efficiency_from_result(result, dmu, normalized_input, normalized_output, 
-                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
-        return None
-    
-    def _try_with_zero_handling(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """尝试使用零值处理重新求解"""
-        # 处理零值：添加小的正数
-        epsilon = 1e-6
-        fixed_input = np.maximum(self.input_data, epsilon)
-        fixed_output = np.maximum(self.output_data, epsilon)
-        
-        # 重新构建约束矩阵
-        A_eq_fixed = A_eq.copy()
-        b_eq_fixed = b_eq.copy()
-        
-        # 更新约束中的系数
-        for i in range(self.n_inputs):
-            for j in range(self.n_dmus):
-                if j != dmu:
-                    lambda_idx = j if j < dmu else j - 1
-                    A_eq_fixed[i, lambda_idx] = fixed_input[j, i]
-        
-        for r_idx, r in enumerate(desirable_outputs):
-            for j in range(self.n_dmus):
-                if j != dmu:
-                    lambda_idx = j if j < dmu else j - 1
-                    A_eq_fixed[self.n_inputs + r_idx, lambda_idx] = fixed_output[j, r]
-        
-        # 重新求解
-        result = self._solve_linear_program(c, None, None, A_eq_fixed, b_eq_fixed, bounds)
-        if result and result.success:
-            return self._calculate_efficiency_from_result(result, dmu, fixed_input, fixed_output, 
-                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
-        return None
-    
-    def _try_with_simplified_constraints(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """尝试使用简化的约束重新求解"""
-        # 简化约束：移除非期望产出约束
-        if n_undesirable > 0:
-            # 只保留投入和期望产出约束
-            n_constraints = self.n_inputs + n_desirable
-            A_eq_simple = A_eq[:n_constraints, :]
-            b_eq_simple = b_eq[:n_constraints]
-            
-            # 重新求解
-            result = self._solve_linear_program(c, None, None, A_eq_simple, b_eq_simple, bounds)
-            if result and result.success:
-                return self._calculate_efficiency_from_result(result, dmu, self.input_data, self.output_data, 
-                                                            desirable_outputs, [], n_desirable, 0)
-        return None
-    
-    def _try_with_adjusted_solver(self, dmu, c, A_eq, b_eq, bounds, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """尝试使用调整的求解器参数重新求解"""
-        from scipy.optimize import linprog
-        
-        # 调整求解器参数
-        result = linprog(
-            c=c,
-            A_ub=None,
-            b_ub=None,
-            A_eq=A_eq,
-            b_eq=b_eq,
-            bounds=bounds,
-            method='highs',
-            options={'maxiter': 5000, 'tol': 1e-8}  # 增加迭代次数，降低容差
-        )
-        
-        if result and result.success:
-            return self._calculate_efficiency_from_result(result, dmu, self.input_data, self.output_data, 
-                                                        desirable_outputs, undesirable_indices, n_desirable, n_undesirable)
-        return None
-    
-    def _calculate_efficiency_from_result(self, result, dmu, input_data, output_data, desirable_outputs, undesirable_indices, n_desirable, n_undesirable):
-        """从求解结果计算效率值"""
-        try:
-            t = result.x[self.n_dmus - 1]
-            if t <= 0:
-                return 1.0
-            
-            # 提取松弛变量
-            slack_inputs = result.x[self.n_dmus - 1 + 1:self.n_dmus - 1 + 1 + self.n_inputs] / t
-            slack_outputs = np.zeros(self.n_outputs)
-            
-            for r_idx, r in enumerate(desirable_outputs):
-                slack_outputs[r] = result.x[self.n_dmus - 1 + self.n_inputs + 1 + r_idx] / t
-            
-            # 计算效率值
-            input_inefficiency = np.sum(slack_inputs / input_data[dmu]) / self.n_inputs
-            numerator = 1 - input_inefficiency
-            
-            output_inefficiency = 0
-            for r_idx, r in enumerate(desirable_outputs):
-                output_inefficiency += slack_outputs[r] / output_data[dmu, r]
-            
-            if n_undesirable > 0:
-                for u_idx, u in enumerate(undesirable_indices):
-                    u_slack = result.x[self.n_dmus - 1 + self.n_inputs + n_desirable + 1 + u_idx] / t
-                    output_inefficiency += u_slack / output_data[dmu, u]
-            
-            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-            denominator = 1 + output_inefficiency
-            
-            return numerator / denominator
-        except:
-            return 1.0
-
 
 class DEAWrapper:
-    """DEA分析包装器，使用自定义DEA实现"""
+    """DEA分析包装器，使用新的DEA模型实现"""
     
     def __init__(self, input_data, output_data, dmu_names=None, max_iter=5000, tolerance=1e-9):
         self.input_data = np.array(input_data)
@@ -1043,7 +829,7 @@ class DEAWrapper:
         
         # 使用自定义DEA实现
         self.dea = CustomDEA(self.input_data, self.output_data, max_iter=self.max_iter, tolerance=self.tolerance)
-        print("✅ 使用自定义DEA实现进行DEA分析")
+        print("✅ 使用新的DEA模型实现进行DEA分析")
     
     # 新增方法：支持不同的模型和方向选择
     def ccr_input_oriented(self):
@@ -1116,7 +902,6 @@ class DEAWrapper:
     def efficiency(self):
         """默认效率计算方法"""
         return self.ccr()
-
 
 # 为了保持兼容性，创建DEA别名
 DEA = DEAWrapper
@@ -1926,7 +1711,6 @@ def create_efficiency_chart(results):
     
     return fig, slack_data
 
-
 def display_dea_formulas():
     """显示DEA模型的数学公式"""
     st.subheader("DEA模型数学公式")
@@ -2069,7 +1853,6 @@ def display_dea_formulas():
     - **n**: DMU数量
     """)
 
-
 def download_dea_results(results):
     """
     生成DEA结果CSV下载
@@ -2115,8 +1898,6 @@ def create_csv_with_proper_encoding(df):
         except Exception as e2:
             # 方法3：最后备用方案
             return df.to_csv(index=False)
-
-
 
 def create_coverage_chart(fsqca_results):
     """
@@ -2198,7 +1979,7 @@ def download_fsqca_results(fsqca_results, necessity_results):
 
 def main():
     # 主标题
-    st.markdown('<div class="main-header">基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统 v1.0</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统</div>', unsafe_allow_html=True)
     
     # 系统状态指示器
     col1, col2, col3, col4 = st.columns(4)
@@ -3359,446 +3140,6 @@ def main():
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
 
-# 添加简化的超效率SBM实现
-def super_sbm_simple(input_data, output_data, undesirable_outputs=None):
-    """
-    简化的超效率SBM模型实现 - 直接求解，不使用Charnes-Cooper变换
-    
-    参数:
-    - input_data: 投入数据 (n_dmus, n_inputs)
-    - output_data: 产出数据 (n_dmus, n_outputs)
-    - undesirable_outputs: 非期望产出索引列表
-    
-    返回:
-    - efficiency_scores: 效率值数组
-    - slack_inputs: 投入松弛变量
-    - slack_outputs: 产出松弛变量
-    """
-    n_dmus, n_inputs = input_data.shape
-    n_outputs = output_data.shape[1]
-    
-    efficiency_scores = np.zeros(n_dmus)
-    slack_inputs = np.zeros((n_dmus, n_inputs))
-    slack_outputs = np.zeros((n_dmus, n_outputs))
-    
-    # 处理非期望产出
-    if undesirable_outputs is not None and len(undesirable_outputs) > 0:
-        undesirable_indices = undesirable_outputs
-        desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
-        n_desirable = len(desirable_outputs)
-        n_undesirable = len(undesirable_indices)
-    else:
-        desirable_outputs = list(range(n_outputs))
-        n_desirable = n_outputs
-        n_undesirable = 0
-        undesirable_indices = []
-    
-    for dmu in range(n_dmus):
-        # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
-        n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable
-        
-        # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
-        # 直接使用非线性规划求解
-        from scipy.optimize import minimize
-        
-        def objective(x):
-            # x = [λ₁, λ₂, ..., λₙ₋₁, s₁⁻, s₂⁻, ..., sₘ⁻, s₁⁺, s₂⁺, ..., sₛ⁺, s₁ᵤ, s₂ᵤ, ..., sᵈᵤ]
-            lambda_vars = x[:n_dmus-1]
-            s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
-            s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
-            s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
-            
-            # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
-            input_inefficiency = np.sum(s_inputs / input_data[dmu]) / n_inputs
-            numerator = 1 - input_inefficiency
-            
-            # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
-            output_inefficiency = 0
-            for r_idx, r in enumerate(desirable_outputs):
-                output_inefficiency += s_outputs[r_idx] / output_data[dmu, r]
-            
-            if n_undesirable > 0:
-                for u_idx, u in enumerate(undesirable_indices):
-                    output_inefficiency += s_undesirable[u_idx] / output_data[dmu, u]
-            
-            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-            denominator = 1 + output_inefficiency
-            
-            return numerator / denominator
-        
-        # 约束条件
-        def constraint_inputs(x):
-            lambda_vars = x[:n_dmus-1]
-            s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
-            constraints = []
-            
-            for i in range(n_inputs):
-                # ∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
-                lambda_idx = 0
-                sum_lambda = 0
-                for j in range(n_dmus):
-                    if j != dmu:
-                        sum_lambda += lambda_vars[lambda_idx] * input_data[j, i]
-                        lambda_idx += 1
-                constraints.append(sum_lambda - (input_data[dmu, i] - s_inputs[i]))
-            
-            return np.array(constraints)
-        
-        def constraint_outputs(x):
-            lambda_vars = x[:n_dmus-1]
-            s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
-            constraints = []
-            
-            for r_idx, r in enumerate(desirable_outputs):
-                # ∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
-                lambda_idx = 0
-                sum_lambda = 0
-                for j in range(n_dmus):
-                    if j != dmu:
-                        sum_lambda += lambda_vars[lambda_idx] * output_data[j, r]
-                        lambda_idx += 1
-                constraints.append(sum_lambda - (output_data[dmu, r] + s_outputs[r_idx]))
-            
-            return np.array(constraints)
-        
-        def constraint_undesirable(x):
-            if n_undesirable == 0:
-                return np.array([])
-            
-            lambda_vars = x[:n_dmus-1]
-            s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
-            constraints = []
-            
-            for u_idx, u in enumerate(undesirable_indices):
-                # ∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
-                lambda_idx = 0
-                sum_lambda = 0
-                for j in range(n_dmus):
-                    if j != dmu:
-                        sum_lambda += lambda_vars[lambda_idx] * output_data[j, u]
-                        lambda_idx += 1
-                constraints.append(sum_lambda - (output_data[dmu, u] - s_undesirable[u_idx]))
-            
-            return np.array(constraints)
-        
-        # 初始值
-        x0 = np.zeros(n_vars)
-        x0[:n_dmus-1] = 1.0 / (n_dmus - 1)  # λ初始值
-        x0[n_dmus-1:] = 0.01  # 松弛变量初始值
-        
-        # 边界条件
-        bounds = [(0, None)] * n_vars
-        
-        # 约束条件
-        constraints = [
-            {'type': 'eq', 'fun': constraint_inputs},
-            {'type': 'eq', 'fun': constraint_outputs}
-        ]
-        if n_undesirable > 0:
-            constraints.append({'type': 'eq', 'fun': constraint_undesirable})
-        
-        # 求解
-        try:
-            result = minimize(objective, x0, method='SLSQP', bounds=bounds, constraints=constraints)
-            
-            if result.success:
-                x = result.x
-                lambda_vars = x[:n_dmus-1]
-                s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
-                s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
-                s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
-                
-                # 存储松弛变量
-                slack_inputs[dmu] = s_inputs
-                for r_idx, r in enumerate(desirable_outputs):
-                    slack_outputs[dmu, r] = s_outputs[r_idx]
-                if n_undesirable > 0:
-                    for u_idx, u in enumerate(undesirable_indices):
-                        slack_outputs[dmu, u] = s_undesirable[u_idx]
-                
-                # 计算效率值
-                efficiency_scores[dmu] = result.fun
-                
-                print(f"DMU {dmu}: efficiency={efficiency_scores[dmu]:.6f}")
-            else:
-                print(f"DMU {dmu}: 求解失败 - {result.message}")
-                efficiency_scores[dmu] = np.nan
-        except Exception as e:
-            print(f"DMU {dmu} 求解失败: {e}")
-            efficiency_scores[dmu] = np.nan
-    
-    return efficiency_scores, slack_inputs, slack_outputs
-
-# 添加正确的超效率SBM实现
-def sbm_model(input_data, output_data, undesirable_outputs, dmu):
-    """
-    计算标准SBM效率（用于处理超效率SBM无解的情况）
-    """
-    n_dmus, n_inputs = input_data.shape
-    n_outputs = output_data.shape[1]
-    
-    # 处理非期望产出
-    if undesirable_outputs is not None and len(undesirable_outputs) > 0:
-        undesirable_indices = undesirable_outputs
-        desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
-        n_desirable = len(desirable_outputs)
-        n_undesirable = len(undesirable_indices)
-    else:
-        desirable_outputs = list(range(n_outputs))
-        n_desirable = n_outputs
-        n_undesirable = 0
-        undesirable_indices = []
-    
-    # 变量：λ (n个), s⁻ (m个), s⁺ (s个), sᵤ (d个), t (1个)
-    n_vars = n_dmus + n_inputs + n_desirable + n_undesirable + 1
-    
-    # 目标函数：min t - (1/m)∑(sᵢ⁻/xᵢ₀)
-    c = np.zeros(n_vars)
-    c[n_dmus] = 1  # t的系数
-    for i in range(n_inputs):
-        c[n_dmus + 1 + i] = -1.0 / (n_inputs * input_data[dmu, i])
-    
-    # 投入约束：∑λⱼxᵢⱼ = txᵢ₀ - sᵢ⁻ → ∑λⱼxᵢⱼ - txᵢ₀ + sᵢ⁻ = 0
-    A_eq_inputs = np.zeros((n_inputs, n_vars))
-    
-    for i in range(n_inputs):
-        # λ的系数
-        for j in range(n_dmus):
-            A_eq_inputs[i, j] = input_data[j, i]
-        # t的系数（负号）
-        A_eq_inputs[i, n_dmus] = -input_data[dmu, i]
-        # s⁻的系数（正号）
-        A_eq_inputs[i, n_dmus + 1 + i] = 1
-    
-    # 期望产出约束：∑λⱼyᵣⱼ = tyᵣ₀ + sᵣ⁺ → ∑λⱼyᵣⱼ - tyᵣ₀ - sᵣ⁺ = 0
-    A_eq_outputs = np.zeros((n_desirable, n_vars))
-    
-    for r_idx, r in enumerate(desirable_outputs):
-        # λ的系数
-        for j in range(n_dmus):
-            A_eq_outputs[r_idx, j] = output_data[j, r]
-        # t的系数（负号）
-        A_eq_outputs[r_idx, n_dmus] = -output_data[dmu, r]
-        # s⁺的系数（负号）
-        A_eq_outputs[r_idx, n_dmus + n_inputs + 1 + r_idx] = -1
-    
-    # 非期望产出约束：∑λⱼuᵤⱼ = tuᵤ₀ - sᵤᵤ → ∑λⱼuᵤⱼ - tuᵤ₀ + sᵤᵤ = 0
-    A_eq_undesirable = np.zeros((n_undesirable, n_vars))
-    
-    for u_idx, u in enumerate(undesirable_indices):
-        # λ的系数
-        for j in range(n_dmus):
-            A_eq_undesirable[u_idx, j] = output_data[j, u]
-        # t的系数（负号）
-        A_eq_undesirable[u_idx, n_dmus] = -output_data[dmu, u]
-        # sᵤ的系数（正号）
-        A_eq_undesirable[u_idx, n_dmus + n_inputs + n_desirable + 1 + u_idx] = 1
-    
-    # 归一化约束：t + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
-    A_eq_norm = np.zeros((1, n_vars))
-    A_eq_norm[0, n_dmus] = 1  # t的系数
-    
-    # 期望产出项
-    for r_idx, r in enumerate(desirable_outputs):
-        A_eq_norm[0, n_dmus + n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
-    
-    # 非期望产出项
-    for u_idx, u in enumerate(undesirable_indices):
-        A_eq_norm[0, n_dmus + n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
-    
-    # 合并等式约束
-    A_eq = np.vstack([A_eq_inputs, A_eq_outputs])
-    if n_undesirable > 0:
-        A_eq = np.vstack([A_eq, A_eq_undesirable])
-    A_eq = np.vstack([A_eq, A_eq_norm])
-    
-    b_eq = np.zeros(A_eq.shape[0])
-    b_eq[-1] = 1  # 归一化约束右边为1
-    
-    # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
-    bounds = [(0, None)] * n_vars
-    
-    # 求解线性规划
-    try:
-        from scipy.optimize import linprog
-        result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, 
-                        method='highs', options={'tol': 1e-9, 'maxiter': 5000})
-        
-        if result.success:
-            t = result.x[n_dmus]
-            if t > 1e-10:
-                # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
-                s_inputs = result.x[n_dmus + 1:n_dmus + 1 + n_inputs]
-                input_inefficiency = np.sum(s_inputs / input_data[dmu]) / n_inputs
-                numerator = 1 - input_inefficiency
-                
-                # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
-                output_inefficiency = 0
-                for r_idx, r in enumerate(desirable_outputs):
-                    s_output = -result.x[n_dmus + n_inputs + 1 + r_idx]
-                    output_inefficiency += s_output / output_data[dmu, r]
-                
-                if n_undesirable > 0:
-                    for u_idx, u in enumerate(undesirable_indices):
-                        s_undesirable = result.x[n_dmus + n_inputs + n_desirable + 1 + u_idx]
-                        output_inefficiency += s_undesirable / output_data[dmu, u]
-                
-                output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-                denominator = 1 + output_inefficiency
-                
-                # 安全检查
-                if denominator <= 1e-6:
-                    denominator = 1e-6
-                
-                return numerator / denominator
-    except:
-        pass
-    
-    return 1.0  # 默认返回1.0
-
-
-def calculate_super_efficiency(input_data, output_data, undesirable_outputs, dmu):
-    """
-    计算超效率值（当标准超效率SBM无解时）
-    """
-    n_dmus, n_inputs = input_data.shape
-    n_outputs = output_data.shape[1]
-    
-    # 1. 计算标准SBM效率
-    standard_sbm = sbm_model(input_data, output_data, undesirable_outputs, dmu)
-    
-    # 2. 如果标准SBM效率<1，则该DMU无效，超效率=标准SBM
-    if standard_sbm < 0.9999:
-        return standard_sbm
-    
-    # 3. 如果标准SBM效率=1，则该DMU有效，需要计算超效率
-    # 使用替代方法：计算该DMU被排除后的效率
-    # 创建新的数据集（排除被评估的DMU）
-    mask = np.ones(n_dmus, dtype=bool)
-    mask[dmu] = False
-    input_data_excl = input_data[mask]
-    output_data_excl = output_data[mask]
-    
-    # 计算该DMU在排除自身后的效率
-    n_dmus_excl = n_dmus - 1
-    
-    # 处理非期望产出
-    if undesirable_outputs is not None and len(undesirable_outputs) > 0:
-        undesirable_indices = undesirable_outputs
-        desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
-        n_desirable = len(desirable_outputs)
-        n_undesirable = len(undesirable_indices)
-    else:
-        desirable_outputs = list(range(n_outputs))
-        n_desirable = n_outputs
-        n_undesirable = 0
-        undesirable_indices = []
-    
-    # 变量：λ (n-1个), s⁻ (m个), s⁺ (s个), sᵤ (d个), t (1个)
-    n_vars = n_dmus_excl + n_inputs + n_desirable + n_undesirable + 1
-    
-    # 目标函数：min t + (1/m)∑(sᵢ⁻/xᵢ₀)
-    c = np.zeros(n_vars)
-    c[n_dmus_excl] = 1  # t的系数
-    for i in range(n_inputs):
-        c[n_dmus_excl + 1 + i] = 1.0 / (n_inputs * input_data[dmu, i])
-    
-    # 投入约束：∑λⱼxᵢⱼ = txᵢ₀ - sᵢ⁻ → ∑λⱼxᵢⱼ - txᵢ₀ + sᵢ⁻ = 0
-    A_eq_inputs = np.zeros((n_inputs, n_vars))
-    
-    for i in range(n_inputs):
-        # λ的系数
-        for j in range(n_dmus_excl):
-            A_eq_inputs[i, j] = input_data_excl[j, i]
-        # t的系数（负号）
-        A_eq_inputs[i, n_dmus_excl] = -input_data[dmu, i]
-        # s⁻的系数（正号）
-        A_eq_inputs[i, n_dmus_excl + 1 + i] = 1
-    
-    # 期望产出约束：∑λⱼyᵣⱼ = tyᵣ₀ + sᵣ⁺ → ∑λⱼyᵣⱼ - tyᵣ₀ - sᵣ⁺ = 0
-    A_eq_outputs = np.zeros((n_desirable, n_vars))
-    
-    for r_idx, r in enumerate(desirable_outputs):
-        # λ的系数
-        for j in range(n_dmus_excl):
-            A_eq_outputs[r_idx, j] = output_data_excl[j, r]
-        # t的系数（负号）
-        A_eq_outputs[r_idx, n_dmus_excl] = -output_data[dmu, r]
-        # s⁺的系数（负号）
-        A_eq_outputs[r_idx, n_dmus_excl + n_inputs + 1 + r_idx] = -1
-    
-    # 非期望产出约束：∑λⱼuᵤⱼ = tuᵤ₀ - sᵤᵤ → ∑λⱼuᵤⱼ - tuᵤ₀ + sᵤᵤ = 0
-    A_eq_undesirable = np.zeros((n_undesirable, n_vars))
-    
-    for u_idx, u in enumerate(undesirable_indices):
-        # λ的系数
-        for j in range(n_dmus_excl):
-            A_eq_undesirable[u_idx, j] = output_data_excl[j, u]
-        # t的系数（负号）
-        A_eq_undesirable[u_idx, n_dmus_excl] = -output_data[dmu, u]
-        # sᵤ的系数（正号）
-        A_eq_undesirable[u_idx, n_dmus_excl + n_inputs + n_desirable + 1 + u_idx] = 1
-    
-    # 归一化约束：t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
-    A_eq_norm = np.zeros((1, n_vars))
-    A_eq_norm[0, n_dmus_excl] = 1  # t的系数
-    
-    # 期望产出项
-    for r_idx, r in enumerate(desirable_outputs):
-        A_eq_norm[0, n_dmus_excl + n_inputs + 1 + r_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
-    
-    # 非期望产出项
-    for u_idx, u in enumerate(undesirable_indices):
-        A_eq_norm[0, n_dmus_excl + n_inputs + n_desirable + 1 + u_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
-    
-    # 合并等式约束
-    A_eq = np.vstack([A_eq_inputs, A_eq_outputs])
-    if n_undesirable > 0:
-        A_eq = np.vstack([A_eq, A_eq_undesirable])
-    A_eq = np.vstack([A_eq, A_eq_norm])
-    
-    b_eq = np.zeros(A_eq.shape[0])
-    b_eq[-1] = 1  # 归一化约束右边为1
-    
-    # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
-    bounds = [(0, None)] * n_vars
-    
-    # 求解线性规划
-    try:
-        from scipy.optimize import linprog
-        result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, 
-                        method='highs', options={'tol': 1e-9, 'maxiter': 5000})
-        
-        if result.success:
-            t = result.x[n_dmus_excl]
-            if t > 1e-10:
-                # 分子：1 + (1/m)∑(sᵢ⁻/xᵢ₀)
-                s_inputs = result.x[n_dmus_excl + 1:n_dmus_excl + 1 + n_inputs]
-                input_inefficiency = np.sum(s_inputs / input_data[dmu]) / n_inputs
-                numerator = 1 + input_inefficiency
-                
-                # 分母：1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
-                output_inefficiency = 0
-                for r_idx, r in enumerate(desirable_outputs):
-                    s_output = -result.x[n_dmus_excl + n_inputs + 1 + r_idx]
-                    output_inefficiency += s_output / output_data[dmu, r]
-                
-                if n_undesirable > 0:
-                    for u_idx, u in enumerate(undesirable_indices):
-                        s_undesirable = result.x[n_dmus_excl + n_inputs + n_desirable + 1 + u_idx]
-                        output_inefficiency += s_undesirable / output_data[dmu, u]
-                
-                output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-                
-                # 安全检查
-                denominator = 1 - output_inefficiency
-                if denominator <= 1e-6:
-                    denominator = 1e-6
-                
-                return numerator / denominator
-    except:
-        pass
-
 def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
     """
     修复后的超效率SBM模型实现 - 添加无解处理选项
@@ -4008,47 +3349,8 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
     
     return efficiency_scores, slack_inputs, slack_outputs, lambda_sums, solution_status
 
-
-def fix_slack_interpretation(efficiency_scores, slack_inputs, slack_outputs, undesirable_indices):
-    """
-    修复松弛变量解释 - 根据效率值调整符号
-    
-    参数:
-    - efficiency_scores: 效率值数组
-    - slack_inputs: 投入松弛变量
-    - slack_outputs: 产出松弛变量
-    - undesirable_indices: 非期望产出索引列表
-    
-    返回:
-    - fixed_slack_inputs: 修正后的投入松弛变量
-    - fixed_slack_outputs: 修正后的产出松弛变量
-    """
-    n_dmus, n_inputs = slack_inputs.shape
-    _, n_outputs = slack_outputs.shape
-    
-    fixed_slack_inputs = slack_inputs.copy()
-    fixed_slack_outputs = slack_outputs.copy()
-    
-    for dmu in range(n_dmus):
-        # 修复3: 对于效率值≥1的DMU，松弛变量应取负号
-        if efficiency_scores[dmu] >= 1.0:
-            # 投入slack：负号表示可以增加的量
-            fixed_slack_inputs[dmu] = -slack_inputs[dmu]
-            
-            # 期望产出slack：负号表示可以减少的量
-            for r in range(n_outputs):
-                if r not in undesirable_indices:
-                    fixed_slack_outputs[dmu, r] = -slack_outputs[dmu, r]
-            
-            # 非期望产出slack：负号表示可以增加的量
-            for u in undesirable_indices:
-                if u < n_outputs:  # 确保索引有效
-                    fixed_slack_outputs[dmu, u] = -slack_outputs[dmu, u]
-    
-    return fixed_slack_inputs, fixed_slack_outputs
-
-
 def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
+
     """
     计算SBM模型的规模报酬状态
     
@@ -4100,8 +3402,5 @@ def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
                         rts_status[-1] += " (λ>1)"
     
     return rts_status, rts_suggestions
-
-    
-
 if __name__ == "__main__":
     main()
