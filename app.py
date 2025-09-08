@@ -1075,15 +1075,15 @@ class DEAWrapper:
         """SBM模型 - 包含非期望产出的松弛基础模型"""
         return self.dea.sbm(undesirable_outputs=undesirable_outputs)
     
-    def super_sbm(self, undesirable_outputs=None, rts='vrs'):
+    def super_sbm(self, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
         """超效率SBM模型 - 允许效率值大于1，包含规模报酬分析"""
         # 分别计算CR-SBM和VR-SBM
-        crs_scores, crs_slack_inputs, crs_slack_outputs, crs_lambda_sums = super_sbm_correct(
-            self.input_data, self.output_data, undesirable_outputs, rts='crs'
+        crs_scores, crs_slack_inputs, crs_slack_outputs, crs_lambda_sums, crs_solution_status = super_sbm_correct(
+            self.input_data, self.output_data, undesirable_outputs, rts='crs', handle_infeasible=handle_infeasible
         )
         
-        vrs_scores, vrs_slack_inputs, vrs_slack_outputs, vrs_lambda_sums = super_sbm_correct(
-            self.input_data, self.output_data, undesirable_outputs, rts='vrs'
+        vrs_scores, vrs_slack_inputs, vrs_slack_outputs, vrs_lambda_sums, vrs_solution_status = super_sbm_correct(
+            self.input_data, self.output_data, undesirable_outputs, rts='vrs', handle_infeasible=handle_infeasible
         )
         
         # 根据用户选择的规模报酬假设决定主效率值
@@ -1091,10 +1091,12 @@ class DEAWrapper:
             efficiency_scores = crs_scores
             slack_inputs = crs_slack_inputs
             slack_outputs = crs_slack_outputs
+            solution_status = crs_solution_status
         else:  # 'vrs'
             efficiency_scores = vrs_scores
             slack_inputs = vrs_slack_inputs
             slack_outputs = vrs_slack_outputs
+            solution_status = vrs_solution_status
         
         # 计算规模报酬
         rts_status, rts_suggestions = calculate_sbm_rts(crs_scores, vrs_scores, vrs_lambda_sums)
@@ -1107,6 +1109,7 @@ class DEAWrapper:
         self.dea.crs_scores = crs_scores
         self.dea.vrs_scores = vrs_scores
         self.dea.lambda_sums = vrs_lambda_sums
+        self.dea.solution_status = solution_status
         
         return efficiency_scores
     
