@@ -1669,8 +1669,7 @@ def validate_dea_data(input_data, output_data):
     return True, "数据验证通过"
 
 def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation='input', 
-                        undesirable_outputs=None, rts='vrs', normalize_data=True, 
-                        max_iter=5000, tolerance=1e-9):
+                        undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
     """
     执行DEA效率分析
     
@@ -1682,9 +1681,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
     - orientation: 导向类型 ('input', 'output')
     - undesirable_outputs: 非期望产出变量列表（仅SBM模型使用）
     - rts: 规模报酬假设 ('crs' 或 'vrs')
-    - normalize_data: 是否进行数据标准化
-    - max_iter: 最大迭代次数
-    - tolerance: 求解器容差
+    - handle_infeasible: 无解处理方式 ('set_to_1' 或 'exclude')
     
     返回:
     - results: 包含效率值和其他分析结果的DataFrame
@@ -1706,37 +1703,18 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         input_data = np.maximum(input_data, 1e-6)
         output_data = np.maximum(output_data, 1e-6)
         
-        # 根据用户选择进行数据标准化
-        if normalize_data:
-            # 使用Min-Max标准化将数据缩放到[0,1]范围
-            input_min = np.min(input_data, axis=0)
-            input_max = np.max(input_data, axis=0)
-            input_range = input_max - input_min
-            input_range[input_range == 0] = 1  # 避免除零
-            input_data = (input_data - input_min) / input_range
-            
-            output_min = np.min(output_data, axis=0)
-            output_max = np.max(output_data, axis=0)
-            output_range = output_max - output_min
-            output_range[output_range == 0] = 1  # 避免除零
-            output_data = (output_data - output_min) / output_range
-            
-            st.info("✅ 数据已标准化到[0,1]范围")
-        else:
-            # 不进行标准化，但检查变异系数
-            input_means = np.mean(input_data, axis=0)
-            output_means = np.mean(output_data, axis=0)
-            input_cv = np.std(input_data, axis=0) / (input_means + 1e-10)
-            output_cv = np.std(output_data, axis=0) / (output_means + 1e-10)
+        # 变异系数判断是否需要标准化
+        input_means = np.mean(input_data, axis=0)
+        output_means = np.mean(output_data, axis=0)
+        input_cv = np.std(input_data, axis=0) / (input_means + 1e-10)
+        output_cv = np.std(output_data, axis=0) / (output_means + 1e-10)
 
-            if np.any(input_cv > 2.0) or np.any(output_cv > 2.0):
-                st.warning("⚠️ 检测到数据变异系数较大，建议启用数据标准化")
-                input_data = input_data / (input_means + 1e-10)
-                output_data = output_data / (output_means + 1e-10)
+        if np.any(input_cv > 2.0) or np.any(output_cv > 2.0):
+            input_data = input_data / (input_means + 1e-10)
+            output_data = output_data / (output_means + 1e-10)
 
         # 创建DEA对象
-        dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names, 
-                        max_iter=max_iter, tolerance=tolerance)
+        dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
         
         results_dict = {
             'DMU': dmu_names,
@@ -1780,25 +1758,51 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 for var_name in undesirable_outputs:
                     if var_name in output_vars:
                         undesirable_indices.append(output_vars.index(var_name))
-                efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices, rts=rts)
+                efficiency_scores = dea.super_sbm(
+                    undesirable_outputs=undesirable_outputs, 
+                    rts=rts,
+                    handle_infeasible=handle_infeasible
+                )
             else:
-                efficiency_scores = dea.super_sbm(rts=rts)
+                efficiency_scores = dea.super_sbm(
+                    rts=rts,
+                    handle_infeasible=handle_infeasible
+                )
             results_dict['效率值'] = efficiency_scores
             
             # 添加投影目标值（原始值 - 松弛变量）
             if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
                 for i, var in enumerate(input_vars):
-                    projection = input_data[:, i] - dea.dea.slack_inputs[:, i]
+                    # 对于效率值≥1的DMU，投影 = 原始值 + |slack|
+                    # 对于效率值<1的DMU，投影 = 原始值 - |slack|
+                    projection = np.zeros(len(input_data))
+                    for dmu in range(len(input_data)):
+                        if efficiency_scores[dmu] >= 1.0:
+                            projection[dmu] = input_data[dmu, i] + abs(dea.dea.slack_inputs[dmu, i])
+                        else:
+                            projection[dmu] = input_data[dmu, i] - abs(dea.dea.slack_inputs[dmu, i])
                     results_dict[f'{var}_投影目标值'] = projection
             
             if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
                 for r, var in enumerate(output_vars):
-                    # 注意：对于期望产出，投影 = 原始值 + 松弛变量
-                    # 对于非期望产出，投影 = 原始值 - 松弛变量
-                    if undesirable_outputs and var in undesirable_outputs:
-                        projection = input_data[:, i] - dea.dea.slack_outputs[:, r]
-                    else:
-                        projection = output_data[:, r] + dea.dea.slack_outputs[:, r]
+                    # 对于期望产出：
+                    #   - 效率值≥1: 投影 = 原始值 - |slack|
+                    #   - 效率值<1: 投影 = 原始值 + |slack|
+                    # 对于非期望产出：
+                    #   - 效率值≥1: 投影 = 原始值 + |slack|
+                    #   - 效率值<1: 投影 = 原始值 - |slack|
+                    projection = np.zeros(len(output_data))
+                    for dmu in range(len(output_data)):
+                        if var in undesirable_outputs:
+                            if efficiency_scores[dmu] >= 1.0:
+                                projection[dmu] = output_data[dmu, r] + abs(dea.dea.slack_outputs[dmu, r])
+                            else:
+                                projection[dmu] = output_data[dmu, r] - abs(dea.dea.slack_outputs[dmu, r])
+                        else:
+                            if efficiency_scores[dmu] >= 1.0:
+                                projection[dmu] = output_data[dmu, r] - abs(dea.dea.slack_outputs[dmu, r])
+                            else:
+                                projection[dmu] = output_data[dmu, r] + abs(dea.dea.slack_outputs[dmu, r])
                     results_dict[f'{var}_投影目标值'] = projection
             
             # 添加规模报酬分析
@@ -1811,6 +1815,10 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 results_dict['CR-SBM效率值'] = dea.dea.crs_scores
             if hasattr(dea.dea, 'vrs_scores'):
                 results_dict['VR-SBM效率值'] = dea.dea.vrs_scores
+            
+            # 添加求解状态
+            if hasattr(dea.dea, 'solution_status'):
+                results_dict['求解状态'] = dea.dea.solution_status
         else:
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
@@ -1826,17 +1834,6 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
 
         # 转为DataFrame
         results_df = pd.DataFrame(results_dict)
-        
-        # 检查是否有NaN值（求解失败）
-        if '效率值' in results_df.columns:
-            efficiency_scores = results_df['效率值'].values
-        else:
-            st.error("未找到效率值列，无法进行后续分析")
-            return None
-            
-        nan_count = np.sum(np.isnan(efficiency_scores))
-        if nan_count > 0:
-            st.error(f"超效率SBM模型：有 {nan_count} 个DMU无法求解")
         
         # 按效率值降序排列，NaN值放在最后
         results_df = results_df.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
@@ -2487,6 +2484,29 @@ def main():
                     # 非超效率SBM模型，使用默认的VRS
                     rts = 'vrs'
                 
+                # 在超效率SBM模型部分添加无解处理选项
+                if model_info['value'] == 'Super-SBM':
+                    st.subheader("🔧 无解处理选项")
+                    
+                    handle_infeasible = st.radio(
+                        "选择无解处理方式",
+                        ["将无解的效率值设为1", "将无解的效率值设为NaN"],
+                        index=0,
+                        help="对于无解的DMU（通常是有效DMU），选择如何处理"
+                    )
+                    
+                    # 转换为内部表示
+                    handle_infeasible = 'set_to_1' if handle_infeasible == "将无解的效率值设为1" else 'exclude'
+                    
+                    st.markdown("""
+                    **说明**：
+                    - **将无解的效率值设为1**：当无解情况较少时推荐使用
+                    - **将无解的效率值设为NaN**：当需要严格区分有效/无效DMU时使用
+                    """)
+                else:
+                    # 非超效率SBM模型，使用默认值
+                    handle_infeasible = 'set_to_1'
+                
                 # 数据预处理选项
                 st.subheader("📊 数据预处理选项")
                 normalize_data = st.checkbox("标准化数据", value=True, 
@@ -2517,9 +2537,7 @@ def main():
                                 orientation,
                                 undesirable_outputs,
                                 rts=rts,  # 传递规模报酬假设
-                                normalize_data=normalize_data,  # 传递数据标准化选项
-                                max_iter=max_iter,  # 传递最大迭代次数
-                                tolerance=tolerance  # 传递容差
+                                handle_infeasible=handle_infeasible  # 传递无解处理方式
                             )
                             
                             if results is not None:
@@ -2698,6 +2716,16 @@ def main():
                             status_display['效率值'] = status_display['效率值'].round(4)
                             
                             st.dataframe(status_display, use_container_width=True, hide_index=True)
+                        
+                        # 求解状态统计
+                        if '求解状态' in results.columns:
+                            infeasible_count = results['求解状态'].str.contains('infeasible').sum()
+                            st.markdown(f"**⚠️ 求解状态统计**: 共有 {infeasible_count} 个DMU无解")
+                            
+                            if infeasible_count > 0:
+                                st.warning(f"注意：有 {infeasible_count} 个DMU无解，已按选择的方式处理")
+                                if infeasible_count / len(results) > 0.2:
+                                    st.warning("警告：无解DMU比例较高（>20%），建议考虑更换模型或假设")
                         
                         # 超效率SBM模型的统计信息
                         st.markdown("**📈 超效率SBM统计信息**")
@@ -3768,21 +3796,23 @@ def calculate_super_efficiency(input_data, output_data, undesirable_outputs, dmu
     except:
         pass
 
-def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs'):
+def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
     """
-    完全修复的超效率SBM模型实现
+    修复后的超效率SBM模型实现 - 添加无解处理选项
     
     参数:
     - input_data: 投入数据 (n_dmus, n_inputs)
     - output_data: 产出数据 (n_dmus, n_outputs)
     - undesirable_outputs: 非期望产出索引列表
     - rts: 规模报酬假设 ('crs' 或 'vrs')
+    - handle_infeasible: 无解处理方式 ('set_to_1' 或 'exclude')
     
     返回:
     - efficiency_scores: 效率值数组
     - slack_inputs: 投入松弛变量
     - slack_outputs: 产出松弛变量
     - lambda_sums: λ和数组（用于规模报酬判定）
+    - solution_status: 求解状态数组
     """
     n_dmus, n_inputs = input_data.shape
     n_outputs = output_data.shape[1]
@@ -3791,6 +3821,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
     slack_inputs = np.zeros((n_dmus, n_inputs))
     slack_outputs = np.zeros((n_dmus, n_outputs))
     lambda_sums = np.zeros(n_dmus)
+    solution_status = ['success'] * n_dmus  # 求解状态
     
     # 处理非期望产出
     if undesirable_outputs is not None and len(undesirable_outputs) > 0:
@@ -3894,7 +3925,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
             constraints.append(A_eq_vrs)
         
         A_eq = np.vstack(constraints)
-        b_eq = np.zeros(A_eq.shape[0])  # 修复2: 所有约束右边应为0（除了归一化约束）
+        b_eq = np.zeros(A_eq.shape[0])  # 所有约束右边应为0（除了归一化约束）
         b_eq[-1] = 1  # 归一化约束右边为1
         
         # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
@@ -3941,54 +3972,77 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                     
-                    # 修复3: 添加安全检查，避免分母非正
+                    # 安全检查，避免分母非正
                     denominator = 1 - output_inefficiency
                     if denominator <= 1e-6:
                         denominator = 1e-6
                     
                     efficiency_scores[dmu] = numerator / denominator
                 else:
-                    efficiency_scores[dmu] = np.nan
-            else:
-                # 修复5: 特殊处理无法求解的DMU
-                # 对于超效率SBM，某些有效DMU可能无可行解
-                # 使用替代方法计算
-                if dmu in [0, 7, 9]:  # DMU 1, 8, 10 (索引从0开始)
-                    # 1. 先计算标准SBM效率
-                    try:
-                        standard_sbm = sbm_model(input_data, output_data, undesirable_outputs, dmu)
-                        
-                        # 2. 如果标准SBM效率=1，则该DMU有效
-                        if abs(standard_sbm - 1.0) < 1e-6:
-                            # 3. 计算超效率值（使用替代方法）
-                            efficiency_scores[dmu] = calculate_super_efficiency(
-                                input_data, output_data, undesirable_outputs, dmu)
-                        else:
-                            efficiency_scores[dmu] = standard_sbm
-                    except:
+                    # 修复2: 无解处理
+                    if handle_infeasible == 'set_to_1':
+                        efficiency_scores[dmu] = 1.0
+                        solution_status[dmu] = 'infeasible (set to 1)'
+                    else:  # 'exclude'
                         efficiency_scores[dmu] = np.nan
-                else:
-                    efficiency_scores[dmu] = np.nan
-        except Exception as e:
-            # 异常处理也使用特殊处理
-            if dmu in [0, 7, 9]:  # DMU 1, 8, 10 (索引从0开始)
-                try:
-                    # 1. 先计算标准SBM效率
-                    standard_sbm = sbm_model(input_data, output_data, undesirable_outputs, dmu)
-                    
-                    # 2. 如果标准SBM效率=1，则该DMU有效
-                    if abs(standard_sbm - 1.0) < 1e-6:
-                        # 3. 计算超效率值（使用替代方法）
-                        efficiency_scores[dmu] = calculate_super_efficiency(
-                            input_data, output_data, undesirable_outputs, dmu)
-                    else:
-                        efficiency_scores[dmu] = standard_sbm
-                except:
-                    efficiency_scores[dmu] = np.nan
+                        solution_status[dmu] = 'infeasible'
             else:
+                # 修复2: 无解处理
+                if handle_infeasible == 'set_to_1':
+                    efficiency_scores[dmu] = 1.0
+                    solution_status[dmu] = 'infeasible (set to 1)'
+                else:  # 'exclude'
+                    efficiency_scores[dmu] = np.nan
+                    solution_status[dmu] = 'infeasible'
+        except Exception as e:
+            # 修复2: 无解处理
+            if handle_infeasible == 'set_to_1':
+                efficiency_scores[dmu] = 1.0
+                solution_status[dmu] = f'infeasible (set to 1): {str(e)}'
+            else:  # 'exclude'
                 efficiency_scores[dmu] = np.nan
+                solution_status[dmu] = f'infeasible: {str(e)}'
     
-    return efficiency_scores, slack_inputs, slack_outputs, lambda_sums
+    return efficiency_scores, slack_inputs, slack_outputs, lambda_sums, solution_status
+
+
+def fix_slack_interpretation(efficiency_scores, slack_inputs, slack_outputs, undesirable_indices):
+    """
+    修复松弛变量解释 - 根据效率值调整符号
+    
+    参数:
+    - efficiency_scores: 效率值数组
+    - slack_inputs: 投入松弛变量
+    - slack_outputs: 产出松弛变量
+    - undesirable_indices: 非期望产出索引列表
+    
+    返回:
+    - fixed_slack_inputs: 修正后的投入松弛变量
+    - fixed_slack_outputs: 修正后的产出松弛变量
+    """
+    n_dmus, n_inputs = slack_inputs.shape
+    _, n_outputs = slack_outputs.shape
+    
+    fixed_slack_inputs = slack_inputs.copy()
+    fixed_slack_outputs = slack_outputs.copy()
+    
+    for dmu in range(n_dmus):
+        # 修复3: 对于效率值≥1的DMU，松弛变量应取负号
+        if efficiency_scores[dmu] >= 1.0:
+            # 投入slack：负号表示可以增加的量
+            fixed_slack_inputs[dmu] = -slack_inputs[dmu]
+            
+            # 期望产出slack：负号表示可以减少的量
+            for r in range(n_outputs):
+                if r not in undesirable_indices:
+                    fixed_slack_outputs[dmu, r] = -slack_outputs[dmu, r]
+            
+            # 非期望产出slack：负号表示可以增加的量
+            for u in undesirable_indices:
+                if u < n_outputs:  # 确保索引有效
+                    fixed_slack_outputs[dmu, u] = -slack_outputs[dmu, u]
+    
+    return fixed_slack_inputs, fixed_slack_outputs
 
 
 def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
