@@ -345,7 +345,8 @@ class CustomDEA:
             
             if result and result.success:
                 phi = result.x[0]
-                efficiency_scores[dmu] = 1.0 / phi if phi > 0 else 1.0
+                # CCR输出导向模型：效率值 = 1/φ，确保在[0,1]范围内
+                efficiency_scores[dmu] = max(0.0, min(1.0, 1.0 / phi if phi > 0 else 1.0))
                 lambda_values[dmu] = result.x[1:]
                 
                 # 计算松弛变量
@@ -517,10 +518,9 @@ class CustomDEA:
             
             if result and result.success:
                 phi = result.x[0]
-                # BCC模型效率值应该在[0,1]范围内
-                # 对于输出导向，效率值 = 1/φ，但需要确保在合理范围内
+                # BCC输出导向模型：效率值 = 1/φ，确保在[0,1]范围内
                 if phi > 0:
-                    efficiency_scores[dmu] = min(1.0 / phi, 1.0)  # 限制最大值为1.0
+                    efficiency_scores[dmu] = max(0.0, min(1.0, 1.0 / phi))
                 else:
                     efficiency_scores[dmu] = 1.0
                 lambda_values[dmu] = result.x[1:]
@@ -1047,7 +1047,6 @@ def create_searchable_multiselect(label, options, key, help_text="", placeholder
     if search_term:
         filtered_options = [opt for opt in options if search_term.lower() in opt.lower()]
         if not filtered_options:
-            st.warning(f"未找到包含 '{search_term}' 的{label}")
             filtered_options = options
     else:
         filtered_options = options
@@ -1165,8 +1164,7 @@ def process_cleaned_data(df_cleaned, warnings):
     st.session_state['data'] = df_cleaned
     st.session_state['data_source'] = 'file'
     
-    # 显示成功消息
-    st.success("✅ 数据加载成功！请继续下一步分析。")
+    # 数据加载完成
     
     # 自动跳转到下一步
     st.markdown("### 🚀 下一步操作")
@@ -1184,8 +1182,7 @@ def detect_and_handle_nulls(df):
     if total_nulls == 0:
         return df, None
     
-    # 显示空值统计信息
-    st.warning(f"⚠️ 检测到数据中包含 {total_nulls} 个空值")
+    # 检测到空值
     
     # 显示各列空值详情
     with st.expander("📊 空值详情", expanded=True):
@@ -1295,7 +1292,6 @@ def create_manual_input_form(num_hospitals, num_variables):
             variables.append({"name": var_name, "type": var_type})
     
     if not variables:
-        st.warning("请至少输入一个变量名称")
         return None
     
     # 创建数据输入表格
@@ -1377,7 +1373,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
     - undesirable_outputs: 非期望产出变量列表（仅SBM模型使用）
     
     返回:
-    - results: 包含效率值的DataFrame
+    - results: 包含效率值和其他分析结果的DataFrame
     """
     try:
         # 准备数据
@@ -1389,226 +1385,243 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         # 数据验证
         is_valid, message = validate_dea_data(input_data, output_data)
         if not is_valid:
-            st.error(f"❌ 数据验证失败: {message}")
+            st.error(f"数据验证失败: {message}")
             return None
         
-        # 数据预处理：处理零值和异常值
-        # 使用更合理的数值处理方式
-        input_data = np.maximum(input_data, 1e-6)  # 避免零值，使用更大的最小值
-        output_data = np.maximum(output_data, 1e-6)  # 避免零值，使用更大的最小值
+        # 数据预处理：避免零值
+        input_data = np.maximum(input_data, 1e-6)
+        output_data = np.maximum(output_data, 1e-6)
         
-        # 数据标准化（可选，有助于数值稳定性）
-        # 如果数据量纲差异很大，可以考虑标准化
+        # 变异系数判断是否需要标准化
         input_means = np.mean(input_data, axis=0)
         output_means = np.mean(output_data, axis=0)
-        
-        # 检查是否需要标准化
-        input_cv = np.std(input_data, axis=0) / (input_means + 1e-10)  # 变异系数
+        input_cv = np.std(input_data, axis=0) / (input_means + 1e-10)
         output_cv = np.std(output_data, axis=0) / (output_means + 1e-10)
-        
+
         if np.any(input_cv > 2.0) or np.any(output_cv > 2.0):
-            # 如果变异系数过大，进行标准化
             input_data = input_data / (input_means + 1e-10)
             output_data = output_data / (output_means + 1e-10)
-        
-        # 创建DEA对象（优先使用pyDEA库，备用自定义DEA实现）
+
+        # 创建DEA对象
         dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
         
-        # 根据模型类型和导向执行分析
-        if model_type in ['CCR', 'BCC']:
-            # 对于CCR和BCC模型，同时运行两种模型进行效率分解
-            st.info("🔄 正在计算综合效率（CCR模型）...")
-            if orientation == 'input':
-                ccr_scores = dea.ccr_input_oriented()
-            else:
-                ccr_scores = dea.ccr_output_oriented()
-            
-            st.info("🔄 正在计算纯技术效率（BCC模型）...")
-            if orientation == 'input':
-                bcc_scores = dea.bcc_input_oriented()
-            else:
-                bcc_scores = dea.bcc_output_oriented()
-            
-            # 计算规模效率
-            st.info("🔄 正在计算规模效率...")
-            scale_efficiency = np.zeros(len(ccr_scores))
-            for i in range(len(ccr_scores)):
-                if bcc_scores[i] > 0:
-                    scale_efficiency[i] = ccr_scores[i] / bcc_scores[i]
-                else:
-                    scale_efficiency[i] = 0.0
-            
-            # 确保规模效率在[0,1]范围内
-            scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
-            
-            # 根据选择的模型类型确定主要效率值
-            if model_type == 'CCR':
-                efficiency_scores = ccr_scores
-            else:  # BCC
-                efficiency_scores = bcc_scores
-            
-            # 创建包含三种效率值的结果DataFrame
-            results_dict = {
-                'DMU': dmu_names,
-                '效率值': efficiency_scores,  # 主要效率值（根据选择的模型）
-                '综合效率(TE)': ccr_scores,
-                '纯技术效率(PTE)': bcc_scores,
-                '规模效率(SE)': scale_efficiency
-            }
-            
-            # 添加松弛变量
-            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
-                for i in range(len(input_vars)):
-                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
-            
-            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
-                for r in range(len(output_vars)):
-                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
-            
-            results = pd.DataFrame(results_dict)
-            
+        results_dict = {
+            'DMU': dmu_names,
+        }
+
+        # 统一计算 CCR 和 BCC（无论选哪个模型都计算，便于后续展示和分解）
+        if orientation == 'input':
+            ccr_scores = dea.ccr_input_oriented()
+            bcc_scores = dea.bcc_input_oriented()
+        else:
+            ccr_scores = dea.ccr_output_oriented()
+            bcc_scores = dea.bcc_output_oriented()
+
+        scale_efficiency = np.divide(ccr_scores, bcc_scores, out=np.zeros_like(ccr_scores), where=bcc_scores!=0)
+        scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
+
+        # 存储所有效率指标
+        results_dict['综合效率(TE)'] = ccr_scores
+        results_dict['纯技术效率(PTE)'] = bcc_scores
+        results_dict['规模效率(SE)'] = scale_efficiency
+
+        # 根据选择的 model_type 设置主效率值
+        if model_type == 'CCR':
+            results_dict['效率值'] = ccr_scores
+        elif model_type == 'BCC':
+            results_dict['效率值'] = bcc_scores
         elif model_type == 'SBM':
             # 处理非期望产出
             if undesirable_outputs:
                 efficiency_scores = dea.sbm(undesirable_outputs=undesirable_outputs)
             else:
-                # 如果没有非期望产出，使用空列表
                 efficiency_scores = dea.sbm()
-            
-            # 创建SBM结果DataFrame
-            results_dict = {
-                'DMU': dmu_names,
-                '效率值': efficiency_scores
-            }
-            
-            # 添加松弛变量
-            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
-                for i in range(len(input_vars)):
-                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
-            
-            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
-                for r in range(len(output_vars)):
-                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
-            
-            results = pd.DataFrame(results_dict)
-            
+            results_dict['效率值'] = efficiency_scores
         elif model_type == 'Super-SBM':
             # 处理非期望产出
             if undesirable_outputs:
                 efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_outputs)
             else:
-                # 如果没有非期望产出，使用空列表
                 efficiency_scores = dea.super_sbm()
-            
-            # 创建Super-SBM结果DataFrame
-            results_dict = {
-                'DMU': dmu_names,
-                '效率值': efficiency_scores
-            }
-            
-            # 添加松弛变量
-            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
-                for i in range(len(input_vars)):
-                    results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
-            
-            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
-                for r in range(len(output_vars)):
-                    results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
-            
-            results = pd.DataFrame(results_dict)
-            
+            results_dict['效率值'] = efficiency_scores
         else:
-            raise ValueError(f"不支持的模型类型: {model_type}")
+            st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
+            return None
+
+        # 添加松弛变量
+        if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+            for i in range(len(input_vars)):
+                results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
         
-        # 确保efficiency_scores是numpy数组
-        if not isinstance(efficiency_scores, np.ndarray):
-            efficiency_scores = np.array(efficiency_scores)
+        if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+            for r in range(len(output_vars)):
+                results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
+
+        # 转为DataFrame
+        results_df = pd.DataFrame(results_dict)
         
         # 检查是否有NaN值（求解失败）
+        efficiency_scores = results_df['效率值'].values
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
-            st.error(f"❌ 有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
-            st.info("💡 请查看控制台输出获取详细的求解器错误信息")
-            st.info("🔍 常见问题：数据异常、约束条件过严、数值不稳定等")
+            st.error(f"有 {nan_count} 个DMU的DEA求解失败，效率值显示为NaN")
         
-        # 效率值后处理：确保在[0,1]范围内（排除NaN值）
+        # 效率值后处理：根据模型类型设置不同的范围检查
         valid_mask = ~np.isnan(efficiency_scores)
         if np.any(valid_mask):
             valid_scores = efficiency_scores[valid_mask]
-            if np.any(valid_scores > 1.0):
-                st.warning("⚠️ 检测到效率值大于1，已自动修正为1.0")
-            if np.any(valid_scores < 0.0):
-                st.warning("⚠️ 检测到效率值小于0，已自动修正为0.0")
             
-            # 只对有效值进行裁剪
-            efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
-        
-        # 创建结果DataFrame
-        results = pd.DataFrame({
-            'DMU': dmu_names,
-            '效率值': efficiency_scores
-        })
+            # 根据模型类型设置效率值范围
+            if model_type in ['CCR', 'BCC']:
+                # CCR和BCC模型：效率值应该在[0,1]范围内
+                if np.any(valid_scores > 1.0):
+                    st.error(f"检测到{model_type}模型效率值大于1，这表示计算有误，请检查数据或模型设置")
+                    st.error("CCR和BCC模型的效率值应该在[0,1]范围内")
+                if np.any(valid_scores < 0.0):
+                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
+                else:
+                    # 只对大于1的值进行修正（虽然这不应该发生）
+                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, 1.0)
+                    
+            elif model_type in ['SBM', 'Super-SBM']:
+                # SBM和Super-SBM模型：效率值可以大于1（超效率特征）
+                if np.any(valid_scores < 0.0):
+                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, np.inf)
+                else:
+                    # 只修正负值，保留大于1的值
+                    efficiency_scores[valid_mask] = np.clip(efficiency_scores[valid_mask], 0.0, np.inf)
+            
+            results_df['效率值'] = efficiency_scores
         
         # 按效率值降序排列
-        results = results.sort_values('效率值', ascending=False).reset_index(drop=True)
+        results_df = results_df.sort_values('效率值', ascending=False).reset_index(drop=True)
         
-        # 显示效率值统计信息
-        st.info(f"📊 效率值统计: 最小值={results['效率值'].min():.3f}, 最大值={results['效率值'].max():.3f}, 平均值={results['效率值'].mean():.3f}")
-        
-        return results
-        
+        return results_df
+
     except Exception as e:
-        st.error(f"DEA分析执行失败: {str(e)}")
-        # 返回模拟数据用于演示
-        st.warning("⚠️ 使用模拟数据进行演示")
-        dmu_names = data['DMU'].values if 'DMU' in data.columns else data['医院ID'].values
-        # 生成模拟效率值
-        np.random.seed(42)  # 确保结果可重现
-        efficiency_scores = np.random.uniform(0.6, 1.0, len(dmu_names))
-        
-        results = pd.DataFrame({
-            'DMU': dmu_names,
-            '效率值': efficiency_scores
-        })
-        
-        results = results.sort_values('效率值', ascending=False).reset_index(drop=True)
-        return results
+        st.error(f"❌ DEA分析过程中发生错误: {str(e)}")
+        return None
 
 def create_efficiency_chart(results):
     """
-    创建效率排名柱状图
+    创建效率排名柱状图 - 支持多种效率类型和松弛变量显示
     
     参数:
-    - results: 包含效率值的DataFrame
+    - results: 包含效率值的DataFrame，应包含综合效率、技术效率、规模效率等列
     
     返回:
     - fig: Plotly图表对象
     """
-    # 创建柱状图
-    fig = px.bar(
-        results, 
-        x='DMU', 
-        y='效率值',
-        title='DMU效率排名',
-        labels={'效率值': '效率值', 'DMU': 'DMU'},
-        color='效率值',
-        color_continuous_scale='RdYlGn'
-    )
+    # 检查可用的效率列
+    efficiency_columns = []
+    if '综合效率(TE)' in results.columns:
+        efficiency_columns.append('综合效率(TE)')
+    if '纯技术效率(PTE)' in results.columns:
+        efficiency_columns.append('纯技术效率(PTE)')
+    if '规模效率(SE)' in results.columns:
+        efficiency_columns.append('规模效率(SE)')
+    if '效率值' in results.columns:
+        efficiency_columns.append('效率值')
+    
+    # 如果没有找到效率列，返回空图表
+    if not efficiency_columns:
+        fig = go.Figure()
+        fig.add_annotation(text="未找到效率数据", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        return fig
+    
+    # 创建子图
+    from plotly.subplots import make_subplots
+    
+    # 计算子图布局
+    n_efficiency = len(efficiency_columns)
+    n_slack = len([col for col in results.columns if 'slacks' in col])
+    
+    # 创建子图
+    if n_efficiency > 0 and n_slack > 0:
+        # 效率图和松弛变量图
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('效率值对比', '松弛变量分析'),
+            vertical_spacing=0.1,
+            row_heights=[0.6, 0.4]
+        )
+    elif n_efficiency > 0:
+        # 只有效率图
+        fig = make_subplots(
+            rows=1, cols=1,
+            subplot_titles=('效率值对比',)
+        )
+    else:
+        # 只有松弛变量图
+        fig = make_subplots(
+            rows=1, cols=1,
+            subplot_titles=('松弛变量分析',)
+        )
+    
+    # 添加效率柱状图
+    if n_efficiency > 0:
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+        
+        for i, col in enumerate(efficiency_columns):
+            color = colors[i % len(colors)]
+            fig.add_trace(
+                go.Bar(
+                    x=results['DMU'],
+                    y=results[col],
+                    name=col,
+                    marker_color=color,
+                    text=[f'{val:.3f}' for val in results[col]],
+                    textposition='outside',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+    
+    # 添加松弛变量图
+    if n_slack > 0:
+        slack_cols = [col for col in results.columns if 'slacks' in col]
+        colors_slack = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#ff99cc']
+        
+        for i, col in enumerate(slack_cols):
+            color = colors_slack[i % len(colors_slack)]
+            fig.add_trace(
+                go.Bar(
+                    x=results['DMU'],
+                    y=results[col],
+                    name=col,
+                    marker_color=color,
+                    text=[f'{val:.3f}' for val in results[col]],
+                    textposition='outside',
+                    showlegend=True
+                ),
+                row=2 if n_efficiency > 0 else 1, col=1
+            )
     
     # 更新布局
     fig.update_layout(
-        xaxis_title="DMU",
-        yaxis_title="效率值",
-        showlegend=False,
-        height=500,
-        title_x=0.5
+        height=800 if n_efficiency > 0 and n_slack > 0 else 500,
+        title_text="DEA分析结果 - 效率值与松弛变量",
+        title_x=0.5,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     
-    # 添加数值标签（精确到小数点后3位）
-    fig.update_traces(
-        texttemplate='%{y:.3f}',
-        textposition='outside'
-    )
+    # 更新x轴标签
+    fig.update_xaxes(title_text="DMU", row=1, col=1)
+    if n_efficiency > 0 and n_slack > 0:
+        fig.update_xaxes(title_text="DMU", row=2, col=1)
+    
+    # 更新y轴标签
+    if n_efficiency > 0:
+        fig.update_yaxes(title_text="效率值", row=1, col=1, range=[0, 1.1])
+    if n_slack > 0:
+        fig.update_yaxes(title_text="松弛变量值", row=2 if n_efficiency > 0 else 1, col=1)
     
     return fig
 
@@ -2291,7 +2304,7 @@ def display_dea_analysis_report(analysis_report):
     st.markdown("**松弛变量解释**:")
     st.write(f"• **投入松弛变量S-(差额变数)**: {slack_analysis['input_slack']['interpretation']}")
     st.write(f"• **产出松弛变量S+(超额变数)**: {slack_analysis['output_slack']['interpretation']}")
-    st.info("💡 注意：需要从DEA求解过程中获取实际的松弛变量值进行精确分析")
+    # 需要从DEA求解过程中获取实际的松弛变量值进行精确分析
     
     # 4. 投入冗余分析
     st.markdown("### 🔍 投入冗余分析")
@@ -2400,7 +2413,7 @@ def display_dea_analysis_report(analysis_report):
                         })
                     st.dataframe(pd.DataFrame(output_data), use_container_width=True)
                 else:
-                    st.info("详细分析数据不可用")
+                    pass  # 详细分析数据不可用
     
     # 改进建议
     if 'improvement_suggestions' in analysis_report and analysis_report['improvement_suggestions']:
@@ -2436,7 +2449,7 @@ def display_dea_analysis_report(analysis_report):
     if 'benchmark_analysis' in analysis_report and analysis_report['benchmark_analysis'].get('best_dmu'):
         st.markdown("### 🎯 基准分析")
         best_dmu = analysis_report['benchmark_analysis']['best_dmu']
-        st.info(f"🏆 **基准DMU**: {best_dmu['id']} (效率值: {best_dmu['efficiency']:.3f})")
+        # 基准DMU: {best_dmu['id']} (效率值: {best_dmu['efficiency']:.3f})
         
         if analysis_report['benchmark_analysis'].get('comparisons'):
             st.markdown("**与基准DMU的差距分析**")
@@ -2622,7 +2635,7 @@ def main():
         
         if input_mode == "📁 上传文件模式":
             st.markdown("### 📁 文件上传")
-            st.info("请上传包含医院数据的Excel或CSV文件，文件必须包含'DMU'列或'医院ID'列。")
+            # 请上传包含医院数据的Excel或CSV文件，文件必须包含'DMU'列或'医院ID'列。
             
             uploaded_file = st.file_uploader(
                 "选择文件",
@@ -2661,16 +2674,16 @@ def main():
                                 null_handling = detect_and_handle_nulls(df)
                                 
                                 if null_handling is None:
-                                    st.info("请选择空值处理方式以继续...")
+                                    pass  # 请选择空值处理方式以继续
                                 else:
                                     # 根据用户选择清理数据
                                     df_cleaned, stats = clean_data(df, null_handling)
                                     
                                     # 显示处理结果
                                     if null_handling == 'fill_zero':
-                                        st.success(f"✅ 已将 {stats['filled_nulls']} 个空值转换为0")
+                                        pass  # 已将空值转换为0
                                     else:  # drop_rows
-                                        st.success(f"✅ 已删除 {stats['removed_rows']} 行包含空值的数据")
+                                        pass  # 已删除包含空值的数据
                                     
                                     # 继续处理数据
                                     process_cleaned_data(df_cleaned, warnings)
@@ -2683,7 +2696,7 @@ def main():
         
         elif input_mode == "✏️ 手动输入模式":
             st.markdown("### ✏️ 手动数据输入")
-            st.info("请设置医院数量和变量数量，然后逐家输入数据。")
+            # 请设置医院数量和变量数量，然后逐家输入数据。
             
             # 设置参数
             col1, col2 = st.columns(2)
@@ -2706,7 +2719,7 @@ def main():
                 st.session_state['data'] = df
                 st.session_state['data_source'] = 'manual'
                 
-                st.success("✅ 数据输入完成！可以进入DEA效率分析模块。")
+                # 数据输入完成！可以进入DEA效率分析模块。
     
     else:
         st.markdown('</div>', unsafe_allow_html=True)  # 关闭数据输入区容器
@@ -2740,7 +2753,7 @@ def main():
             with col1:
                 st.markdown("**选择【投入变量】**")
                 st.caption("资源消耗类指标，如医生人数、床位数等")
-                st.info("💡 **医疗示例**：医生人数、护士人数、床位数、医疗设备数量、运营成本等")
+                # 医疗示例：医生人数、护士人数、床位数、医疗设备数量、运营成本等
                 input_vars = create_searchable_multiselect(
                     "投入变量",
                     options=numeric_columns,
@@ -2752,7 +2765,7 @@ def main():
             with col2:
                 st.markdown("**选择【产出变量】**")
                 st.caption("服务成果类指标，如门诊量、手术量等")
-                st.info("💡 **医疗示例**：门诊人次、住院人次、手术例数、出院人数、患者满意度等")
+                # 医疗示例：门诊人次、住院人次、手术例数、出院人数、患者满意度等
                 output_vars = create_searchable_multiselect(
                     "产出变量",
                     options=numeric_columns,
@@ -2767,7 +2780,7 @@ def main():
             elif not output_vars:
                 st.error("❌ 请至少选择1个产出变量")
             else:
-                st.success(f"✅ 已选择 {len(input_vars)} 个投入变量，{len(output_vars)} 个产出变量")
+                # 已选择投入变量和产出变量
                 
                 # 模型选择
                 st.subheader("🔬 模型选择")
@@ -2809,7 +2822,7 @@ def main():
                 # 显示模型详细说明
                 model_info = model_options[selected_model]
                 st.markdown(f"**{model_info['scenario']}**")
-                st.info(f"💡 {model_info['description']}")
+                # {model_info['description']}
                 st.markdown(f"**模型特点：**\n{model_info['features']}")
                 
                 # 导向选择（仅对CCR和BCC模型显示）
@@ -2841,7 +2854,7 @@ def main():
                     orientation_info = orientation_options[selected_orientation]
                     orientation = orientation_info['value']
                     st.markdown(f"**{orientation_info['scenario']}**")
-                    st.info(f"💡 {orientation_info['description']}")
+                    # {orientation_info['description']}
                     st.markdown(f"**导向特点：**\n{orientation_info['features']}")
                 
                 # 非期望产出选择（仅对SBM模型显示）
@@ -2866,12 +2879,15 @@ def main():
                         
                         if selected_undesirable:
                             undesirable_outputs = selected_undesirable
-                            st.success(f"✅ 已选择 {len(selected_undesirable)} 个非期望产出变量")
-                            st.info("💡 **非期望产出说明**：这些变量的数值越小表示效率越高，如医疗纠纷、不良事件等")
+                            # 已选择非期望产出变量
+                            # 非期望产出说明：这些变量的数值越小表示效率越高，如医疗纠纷、不良事件等
                         else:
-                            st.info("💡 未选择非期望产出，所有产出变量将视为期望产出")
+                            # 未选择非期望产出，所有产出变量将视为期望产出
+                            undesirable_outputs = []
                     else:
-                        st.warning("⚠️ 没有产出变量可供选择")
+                        # 没有产出变量可供选择
+                        st.info("当前未选择任何产出变量，无法设置非期望产出。")
+                        undesirable_outputs = []
                 
                 # 执行分析按钮
                 st.markdown("---")
@@ -2929,7 +2945,7 @@ def main():
                                     st.session_state['selected_output_vars'] = []
                                     st.session_state['dea_model'] = str(selected_model) if selected_model else ""
                                 
-                                st.success("✅ DEA分析完成！")
+                                # DEA分析完成！
                 
                 with col_btn3:
                     if st.button("📐 查看数学公式", type="secondary", use_container_width=True):
@@ -2980,9 +2996,8 @@ def main():
                         )
                         st.markdown('</div>', unsafe_allow_html=True)
                         
-                        # 显示效率分解说明
-                        st.info("""
-                        📚 **效率分解说明**：
+                        # 效率分解说明
+                        st.markdown("""
                         - **综合效率(TE)**：CCR模型结果，反映整体效率水平
                         - **纯技术效率(PTE)**：BCC模型结果，反映技术管理水平
                         - **规模效率(SE)**：综合效率÷纯技术效率，反映规模合理性
@@ -3114,7 +3129,7 @@ def main():
                     
                     # 检查是否已经包含效率分解结果
                     if '综合效率(TE)' in results.columns:
-                        st.info("✅ **效率分解分析已完成**！上面的排名表格已显示综合效率、纯技术效率和规模效率三种效率值。")
+                        # 效率分解分析已完成！上面的排名表格已显示综合效率、纯技术效率和规模效率三种效率值。
                         st.markdown("""
                         **效率分解结果说明**：
                         - **综合效率(TE)**：CCR模型结果，反映整体效率水平
@@ -3149,7 +3164,7 @@ def main():
                                             display_efficiency_decomposition(decomposition_results)
                                             
                                             # 提示用户并刷新页面
-                                            st.success("✅ 效率分解分析完成！排名表格已更新，显示三种效率值。")
+                                            # 效率分解分析完成！排名表格已更新，显示三种效率值。
                                             st.rerun()  # 刷新页面以更新排名表格
                                     else:
                                         st.error("❌ 缺少必要的数据或变量选择信息")
@@ -3180,7 +3195,8 @@ def main():
                             # 保存分析报告到session state
                             st.session_state['dea_analysis_report'] = analysis_report
     else:
-        st.warning("⚠️ 请先在数据输入区中加载数据")
+        # 请先在数据输入区中加载数据
+        pass
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭DEA分析区容器
     
@@ -3191,7 +3207,7 @@ def main():
     # 检查QCA模块状态
     if not QCA_AVAILABLE:
         st.error("❌ QCA分析模块不可用，请检查模块安装")
-        st.info("💡 **解决方案**：")
+        # 解决方案：
         st.markdown("""
         1. 确保qca_analysis.py文件存在
         2. 检查Python环境是否正确
@@ -3238,10 +3254,10 @@ def main():
             if not condition_vars:
                 st.error("❌ 请至少选择1个条件变量")
             else:
-                st.success(f"✅ 已选择 {len(condition_vars)} 个条件变量")
+                # 已选择条件变量
                 
                 st.subheader("🔧 数据预处理")
-                st.info("正在将条件变量标准化为0-1范围的模糊集...")
+                # 正在将条件变量标准化为0-1范围的模糊集...
                 
                 # 创建数据副本用于QCA分析
                 dmu_column = 'DMU' if 'DMU' in data.columns else '医院ID'
@@ -3254,7 +3270,8 @@ def main():
                     if max_val > min_val:  # 避免除以0
                         data_with_efficiency[var] = (data_with_efficiency[var] - min_val) / (max_val - min_val)
                     else:
-                        st.warning(f"⚠️ 变量 '{var}' 的值全部相同，标准化后将为常数")
+                        # 变量 '{var}' 的值全部相同，标准化后将为常数
+                        pass
                 
                 # 显示标准化后的数据预览
                 st.markdown("### 📊 标准化后数据预览")
@@ -3274,7 +3291,8 @@ def main():
                 
                 with col2:
                     if perform_necessity:
-                        st.info("💡 将自动过滤一致性<0.9的变量")
+                        # 将自动过滤一致性<0.9的变量
+                        pass
                 
                 # 组态路径分析参数配置
                 st.subheader("⚙️ 组态路径分析参数配置")
@@ -3316,7 +3334,7 @@ def main():
                 if pri_consistency >= consistency:
                     st.error("❌ PRI一致性阈值必须小于一致性阈值")
                 else:
-                    st.success("✅ 参数配置正确")
+                    # 参数配置正确
                     
                     # 执行分析按钮
                     if st.button("🚀 生成高质量发展路径", type="primary", help="点击生成基于fsQCA的高质量发展路径"):
@@ -3340,11 +3358,14 @@ def main():
                                     valid_vars = necessity_results[necessity_results['Raw Consistency'] >= 0.9]['条件变量'].tolist()
                                     if valid_vars:
                                         condition_vars = valid_vars
-                                        st.info(f"✅ 必要性分析完成，保留 {len(valid_vars)} 个有效条件变量")
+                                        # 必要性分析完成，保留有效条件变量
+                                        pass
                                     else:
-                                        st.warning("⚠️ 所有条件变量的一致性都<0.9，使用原始变量进行分析")
+                                        # 所有条件变量的一致性都<0.9，使用原始变量进行分析
+                                        pass
                                 else:
-                                    st.warning("⚠️ 必要性分析失败，使用原始变量进行分析")
+                                    # 必要性分析失败，使用原始变量进行分析
+                                    pass
                             
                             # 执行fsQCA分析
                             fsqca_results = perform_minimization(
@@ -3388,7 +3409,7 @@ def main():
                                     # 使用基本类型保存
                                     st.session_state['selected_condition_vars'] = []
                                 
-                                st.success("✅ fsQCA分析完成！")
+                                # fsQCA分析完成！
                                 
                                 # 显示必要性分析结果
                                 if not necessity_results.empty:
@@ -3483,18 +3504,19 @@ def main():
                                     st.markdown("- **无效路径**: 不满足任何阈值的路径")
                                     
                                 else:
-                                    st.warning("⚠️ 没有找到有效路径，请尝试调整参数阈值")
+                                    # 没有找到有效路径，请尝试调整参数阈值
+                                    pass
                             else:
                                 # QCA分析失败
                                 st.error("❌ fsQCA分析失败，请检查数据和参数设置")
-                                st.info("💡 **可能的原因**：")
+                                # 可能的原因：
                                 st.markdown("""
                                 1. 数据格式不正确
                                 2. 参数设置不当
                                 3. 条件变量选择问题
                                 4. 数据量不足
                                 """)
-                                st.info("💡 **解决方案**：")
+                                # 解决方案：
                                 st.markdown("""
                                 1. 检查数据是否包含足够的案例
                                 2. 调整一致性阈值和频率阈值
@@ -3503,9 +3525,9 @@ def main():
                                 """)
     else:
         if 'data' not in st.session_state:
-            st.warning("⚠️ 请先在数据输入区中加载数据")
+            # 请先在数据输入区中加载数据
         elif 'dea_results' not in st.session_state:
-            st.warning("⚠️ 请先完成DEA效率分析")
+            # 请先完成DEA效率分析
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
 
@@ -3543,7 +3565,6 @@ def perform_efficiency_decomposition(data, input_vars, output_vars, orientation=
         dea = DEAWrapper(input_data, output_data, dmu_names=dmu_names)
         
         # 运行CCR模型（综合效率）
-        st.info("🔄 正在计算综合效率（CCR模型）...")
         if orientation == 'input':
             ccr_scores = dea.ccr_input_oriented()
         else:
@@ -3554,7 +3575,6 @@ def perform_efficiency_decomposition(data, input_vars, output_vars, orientation=
         ccr_slack_outputs = dea.dea.slack_outputs.copy()
         
         # 运行BCC模型（纯技术效率）
-        st.info("🔄 正在计算纯技术效率（BCC模型）...")
         if orientation == 'input':
             bcc_scores = dea.bcc_input_oriented()
         else:
@@ -3565,7 +3585,6 @@ def perform_efficiency_decomposition(data, input_vars, output_vars, orientation=
         bcc_slack_outputs = dea.dea.slack_outputs.copy()
         
         # 计算规模效率
-        st.info("🔄 正在计算规模效率...")
         scale_efficiency = np.zeros(len(ccr_scores))
         
         for i in range(len(ccr_scores)):
@@ -3598,7 +3617,7 @@ def perform_efficiency_decomposition(data, input_vars, output_vars, orientation=
         # 按综合效率降序排列
         results = results.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
         
-        st.success("✅ 效率分解分析完成！")
+        # 效率分解分析完成！
         
         return {
             'results': results,
@@ -3772,7 +3791,8 @@ def display_efficiency_decomposition(decomposition_results):
             slack_df = pd.DataFrame(slack_analysis)
             st.dataframe(slack_df, use_container_width=True, hide_index=True)
         else:
-            st.info("✅ 所有DMU的松弛变量都为0，表示所有变量都达到最优水平")
+            # 所有DMU的松弛变量都为0，表示所有变量都达到最优水平
+            pass
     
     # 效率分解分析
     st.markdown("#### 🔍 效率分解分析")
