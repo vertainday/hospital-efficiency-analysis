@@ -1070,8 +1070,8 @@ class DEAWrapper:
     
     def super_sbm(self, undesirable_outputs=None):
         """超效率SBM模型 - 允许效率值大于1"""
-        # 使用正确的超效率SBM实现
-        efficiency_scores, slack_inputs, slack_outputs = super_sbm_correct(
+        # 使用简化的超效率SBM实现
+        efficiency_scores, slack_inputs, slack_outputs = super_sbm_simple(
             self.input_data, self.output_data, undesirable_outputs
         )
         
@@ -2513,7 +2513,9 @@ def main():
                                     else:
                                         st.session_state['dea_results'] = results
                                     
-                                    st.session_state['dea_model'] = str(selected_model) if selected_model else ""
+                                    # 保存模型的实际值而不是显示名称
+                                    model_value = model_info['value'] if 'model_info' in locals() else str(selected_model) if selected_model else ""
+                                    st.session_state['dea_model'] = model_value
                                     
                                     # 安全地保存变量列表
                                     input_vars_list = []
@@ -2540,7 +2542,9 @@ def main():
                                     # 使用基本类型保存
                                     st.session_state['selected_input_vars'] = []
                                     st.session_state['selected_output_vars'] = []
-                                    st.session_state['dea_model'] = str(selected_model) if selected_model else ""
+                                    # 保存模型的实际值而不是显示名称
+                                    model_value = model_info['value'] if 'model_info' in locals() else str(selected_model) if selected_model else ""
+                                    st.session_state['dea_model'] = model_value
                                 
                                 # DEA分析完成！
                 
@@ -3297,6 +3301,176 @@ def main():
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
 
+# 添加简化的超效率SBM实现
+def super_sbm_simple(input_data, output_data, undesirable_outputs=None):
+    """
+    简化的超效率SBM模型实现 - 直接求解，不使用Charnes-Cooper变换
+    
+    参数:
+    - input_data: 投入数据 (n_dmus, n_inputs)
+    - output_data: 产出数据 (n_dmus, n_outputs)
+    - undesirable_outputs: 非期望产出索引列表
+    
+    返回:
+    - efficiency_scores: 效率值数组
+    - slack_inputs: 投入松弛变量
+    - slack_outputs: 产出松弛变量
+    """
+    n_dmus, n_inputs = input_data.shape
+    n_outputs = output_data.shape[1]
+    
+    efficiency_scores = np.zeros(n_dmus)
+    slack_inputs = np.zeros((n_dmus, n_inputs))
+    slack_outputs = np.zeros((n_dmus, n_outputs))
+    
+    # 处理非期望产出
+    if undesirable_outputs is not None and len(undesirable_outputs) > 0:
+        undesirable_indices = undesirable_outputs
+        desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
+        n_desirable = len(desirable_outputs)
+        n_undesirable = len(undesirable_indices)
+    else:
+        desirable_outputs = list(range(n_outputs))
+        n_desirable = n_outputs
+        n_undesirable = 0
+        undesirable_indices = []
+    
+    for dmu in range(n_dmus):
+        # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
+        n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable
+        
+        # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+        # 直接使用非线性规划求解
+        from scipy.optimize import minimize
+        
+        def objective(x):
+            # x = [λ₁, λ₂, ..., λₙ₋₁, s₁⁻, s₂⁻, ..., sₘ⁻, s₁⁺, s₂⁺, ..., sₛ⁺, s₁ᵤ, s₂ᵤ, ..., sᵈᵤ]
+            lambda_vars = x[:n_dmus-1]
+            s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
+            s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
+            s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
+            
+            # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
+            input_inefficiency = np.sum(s_inputs / input_data[dmu]) / n_inputs
+            numerator = 1 - input_inefficiency
+            
+            # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+            output_inefficiency = 0
+            for r_idx, r in enumerate(desirable_outputs):
+                output_inefficiency += s_outputs[r_idx] / output_data[dmu, r]
+            
+            if n_undesirable > 0:
+                for u_idx, u in enumerate(undesirable_indices):
+                    output_inefficiency += s_undesirable[u_idx] / output_data[dmu, u]
+            
+            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
+            denominator = 1 + output_inefficiency
+            
+            return numerator / denominator
+        
+        # 约束条件
+        def constraint_inputs(x):
+            lambda_vars = x[:n_dmus-1]
+            s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
+            constraints = []
+            
+            for i in range(n_inputs):
+                # ∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
+                lambda_idx = 0
+                sum_lambda = 0
+                for j in range(n_dmus):
+                    if j != dmu:
+                        sum_lambda += lambda_vars[lambda_idx] * input_data[j, i]
+                        lambda_idx += 1
+                constraints.append(sum_lambda - (input_data[dmu, i] - s_inputs[i]))
+            
+            return np.array(constraints)
+        
+        def constraint_outputs(x):
+            lambda_vars = x[:n_dmus-1]
+            s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
+            constraints = []
+            
+            for r_idx, r in enumerate(desirable_outputs):
+                # ∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
+                lambda_idx = 0
+                sum_lambda = 0
+                for j in range(n_dmus):
+                    if j != dmu:
+                        sum_lambda += lambda_vars[lambda_idx] * output_data[j, r]
+                        lambda_idx += 1
+                constraints.append(sum_lambda - (output_data[dmu, r] + s_outputs[r_idx]))
+            
+            return np.array(constraints)
+        
+        def constraint_undesirable(x):
+            if n_undesirable == 0:
+                return np.array([])
+            
+            lambda_vars = x[:n_dmus-1]
+            s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
+            constraints = []
+            
+            for u_idx, u in enumerate(undesirable_indices):
+                # ∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
+                lambda_idx = 0
+                sum_lambda = 0
+                for j in range(n_dmus):
+                    if j != dmu:
+                        sum_lambda += lambda_vars[lambda_idx] * output_data[j, u]
+                        lambda_idx += 1
+                constraints.append(sum_lambda - (output_data[dmu, u] - s_undesirable[u_idx]))
+            
+            return np.array(constraints)
+        
+        # 初始值
+        x0 = np.zeros(n_vars)
+        x0[:n_dmus-1] = 1.0 / (n_dmus - 1)  # λ初始值
+        x0[n_dmus-1:] = 0.01  # 松弛变量初始值
+        
+        # 边界条件
+        bounds = [(0, None)] * n_vars
+        
+        # 约束条件
+        constraints = [
+            {'type': 'eq', 'fun': constraint_inputs},
+            {'type': 'eq', 'fun': constraint_outputs}
+        ]
+        if n_undesirable > 0:
+            constraints.append({'type': 'eq', 'fun': constraint_undesirable})
+        
+        # 求解
+        try:
+            result = minimize(objective, x0, method='SLSQP', bounds=bounds, constraints=constraints)
+            
+            if result.success:
+                x = result.x
+                lambda_vars = x[:n_dmus-1]
+                s_inputs = x[n_dmus-1:n_dmus-1+n_inputs]
+                s_outputs = x[n_dmus-1+n_inputs:n_dmus-1+n_inputs+n_desirable]
+                s_undesirable = x[n_dmus-1+n_inputs+n_desirable:]
+                
+                # 存储松弛变量
+                slack_inputs[dmu] = s_inputs
+                for r_idx, r in enumerate(desirable_outputs):
+                    slack_outputs[dmu, r] = s_outputs[r_idx]
+                if n_undesirable > 0:
+                    for u_idx, u in enumerate(undesirable_indices):
+                        slack_outputs[dmu, u] = s_undesirable[u_idx]
+                
+                # 计算效率值
+                efficiency_scores[dmu] = result.fun
+                
+                print(f"DMU {dmu}: efficiency={efficiency_scores[dmu]:.6f}")
+            else:
+                print(f"DMU {dmu}: 求解失败 - {result.message}")
+                efficiency_scores[dmu] = np.nan
+        except Exception as e:
+            print(f"DMU {dmu} 求解失败: {e}")
+            efficiency_scores[dmu] = np.nan
+    
+    return efficiency_scores, slack_inputs, slack_outputs
+
 # 添加正确的超效率SBM实现
 def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
     """
@@ -3426,7 +3600,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
             
             if result.success:
                 t = result.x[n_dmus - 1]
-                if t > 0:
+                if t > 1e-10:  # 使用更小的阈值而不是0
                     # 提取松弛变量
                     slack_inputs[dmu] = result.x[n_dmus - 1 + 1:n_dmus - 1 + 1 + n_inputs] / t
                     
@@ -3457,10 +3631,16 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                     denominator = 1 + output_inefficiency
                     
+                    # 计算效率值，允许超过1
                     efficiency_scores[dmu] = numerator / denominator
+                    
+                    # 调试信息
+                    print(f"DMU {dmu}: t={t:.6f}, numerator={numerator:.6f}, denominator={denominator:.6f}, efficiency={efficiency_scores[dmu]:.6f}")
                 else:
+                    print(f"DMU {dmu}: t值太小 ({t:.2e})，求解失败")
                     efficiency_scores[dmu] = np.nan
             else:
+                print(f"DMU {dmu}: 线性规划求解失败")
                 efficiency_scores[dmu] = np.nan
         except Exception as e:
             print(f"DMU {dmu} 求解失败: {e}")
