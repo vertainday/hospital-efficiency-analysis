@@ -636,7 +636,7 @@ class CustomDEA:
         
         return efficiency_scores
     
-    def super_sbm(self, undesirable_outputs=None, method='highs'):
+    def super_sbm_old(self, undesirable_outputs=None, method='highs'):
         """
         超效率SBM模型 - 允许效率值大于1
         
@@ -647,6 +647,8 @@ class CustomDEA:
              ∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ, p=1,...,d
              λⱼ ≥ 0, sᵢ⁻ ≥ 0, sᵣ⁺ ≥ 0, sᵤᵤ ≥ 0
              (排除被评估的DMU)
+        
+        注意：超效率SBM模型允许效率值大于1，用于对有效DMU进行进一步排序
         """
         efficiency_scores = np.zeros(self.n_dmus)
         slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
@@ -675,8 +677,13 @@ class CustomDEA:
             
             # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
             # 使用Charnes-Cooper变换：t = 1 / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+            # 目标函数变为：min t - (1/m)∑(sᵢ⁻/xᵢ₀)
             c = np.zeros(n_vars + 1)
             c[self.n_dmus - 1] = 1  # t的系数
+            
+            # 投入松弛变量的系数
+            for i in range(self.n_inputs):
+                c[self.n_dmus - 1 + 1 + i] = -1.0 / (self.n_inputs * self.input_data[dmu, i])
             
             # 约束条件
             # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
@@ -1063,7 +1070,16 @@ class DEAWrapper:
     
     def super_sbm(self, undesirable_outputs=None):
         """超效率SBM模型 - 允许效率值大于1"""
-        return self.dea.super_sbm(undesirable_outputs=undesirable_outputs)
+        # 使用正确的超效率SBM实现
+        efficiency_scores, slack_inputs, slack_outputs = super_sbm_correct(
+            self.input_data, self.output_data, undesirable_outputs
+        )
+        
+        # 将松弛变量存储到DEA对象中
+        self.dea.slack_inputs = slack_inputs
+        self.dea.slack_outputs = slack_outputs
+        
+        return efficiency_scores
     
     def efficiency(self):
         """默认效率计算方法"""
@@ -1764,14 +1780,14 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
 
-        # 添加松弛变量
+        # 添加松弛变量 - 使用原始列名
         if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
-            for i in range(len(input_vars)):
-                results_dict[f'投入{i+1}_slacks'] = dea.dea.slack_inputs[:, i]
+            for i, var in enumerate(input_vars):
+                results_dict[f'{var}_slacks'] = dea.dea.slack_inputs[:, i]
         
         if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
-            for r in range(len(output_vars)):
-                results_dict[f'产出{r+1}_slacks'] = dea.dea.slack_outputs[:, r]
+            for r, var in enumerate(output_vars):
+                results_dict[f'{var}_slacks'] = dea.dea.slack_outputs[:, r]
 
         # 转为DataFrame
         results_df = pd.DataFrame(results_dict)
@@ -1786,7 +1802,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
             if st.session_state.get('dea_model') == 'Super-SBM':
-                st.error(f"❌ 超效率SBM模型：有 {nan_count} 个DMU无法求解")
+                st.error(f"超效率SBM模型：有 {nan_count} 个DMU无法求解")
                 st.markdown("**🔍 数据检查建议：**")
                 st.markdown("""
                 所有自动修复策略都失败了，说明数据存在根本性问题，请检查：
@@ -2651,6 +2667,44 @@ def main():
                             status_display['效率值'] = status_display['效率值'].round(4)
                             
                             st.dataframe(status_display, use_container_width=True, hide_index=True)
+                        
+                        # 超效率SBM模型的统计信息
+                        st.markdown("**📈 超效率SBM统计信息**")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("分析医院数", len(results))
+                        
+                        with col2:
+                            efficient_count = len(results[results['效率值'] >= 0.9999])
+                            st.metric("有效医院数", efficient_count)
+                        
+                        with col3:
+                            avg_efficiency = results['效率值'].mean()
+                            st.metric("平均效率值", f"{avg_efficiency:.3f}")
+                        
+                        # 效率值分布统计
+                        st.markdown("**效率值分布统计**")
+                        efficiency_stats = results['效率值'].describe()
+                        st.write(efficiency_stats)
+                        
+                        # 超效率SBM模型效率值解释
+                        st.markdown("**📋 超效率SBM模型效率值解释**")
+                        st.markdown("""
+                        | 效率值范围 | 含义 | 解读 |
+                        |-----------|------|------|
+                        | **效率值 = 1** | 技术有效 | 位于效率前沿面上，达到最优状态 |
+                        | **效率值 < 1** | 技术无效 | 存在改进空间，需要优化投入产出组合 |
+                        | **效率值 > 1** | 超效率 | 超越效率前沿，表现优异，可作为标杆 |
+                        """)
+                        
+                        st.markdown("""
+                        **超效率SBM模型特点**：
+                        - 允许效率值大于1，可对有效DMU进行进一步排序
+                        - 处理非期望产出（如CO₂排放）
+                        - 提供更精确的效率评估
+                        - 效率值范围：(0,∞)
+                        """)
                                               
                     # 检查结果中是否包含三种效率值（非超效率SBM模型）
                     elif '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
@@ -2698,142 +2752,119 @@ def main():
                         """)
                         
                     else:
-                        # 检查是否为超效率SBM模型
-                        if st.session_state.get('dea_model') == 'Super-SBM':
-                            # 超效率SBM模型的专门结果展示
-                            st.markdown("**超效率SBM分析结果（按效率值降序排列）**")
-                            
-                            # 按效率值降序排序
-                            results_display = results.sort_values('效率值', ascending=False).reset_index(drop=True)
-                            results_display['效率值'] = results_display['效率值'].round(4)
-                            results_display['排名'] = range(1, len(results_display) + 1)
-                            
-                            # 选择要显示的列
-                            display_cols = ['排名', 'DMU', '效率值']
-                            
-                            # 添加规模报酬相关列
-                            if '规模报酬(RTS)' in results_display.columns:
-                                display_cols.append('规模报酬(RTS)')
-                            if '规模调整建议' in results_display.columns:
-                                display_cols.append('规模调整建议')
-                            
-                            # 重新排列列顺序
-                            results_display = results_display[display_cols]
-                            
-                        else:
-                            # 其他模型的单一效率值显示
-                            st.markdown("**效率值排名（按效率值降序排列）**")
-                            try:
-                                results_display = results.copy()
-                            except Exception as e:
-                                st.error(f"结果数据复制失败: {e}")
-                                results_display = results
-                            
-                            # 按效率值降序排序
-                            results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                            results_display['效率值'] = results_display['效率值'].round(3)
-                            efficiency_col = '效率值'
-                            results_display['排名'] = range(1, len(results_display) + 1)
-                            
-                            # 重新排列列顺序
-                            results_display = results_display[['排名', 'DMU', efficiency_col]]
+                        # 其他模型的单一效率值显示
+                        st.markdown("**效率值排名（按效率值降序排列）**")
+                        try:
+                            results_display = results.copy()
+                        except Exception as e:
+                            st.error(f"结果数据复制失败: {e}")
+                            results_display = results
                         
-                        # 应用蓝色渐变背景样式
+                        # 按效率值降序排序
+                        results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                        results_display['效率值'] = results_display['效率值'].round(3)
+                        efficiency_col = '效率值'
+                        results_display['排名'] = range(1, len(results_display) + 1)
+                        
+                        # 重新排列列顺序
+                        results_display = results_display[['排名', 'DMU', efficiency_col]]
+                    
+                    # 应用蓝色渐变背景样式
+                    st.markdown("""
+                    <style>
+                    .efficiency-table {
+                        background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
+                        border-radius: 10px;
+                        padding: 1rem;
+                        margin: 1rem 0;
+                        box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
+                    st.dataframe(
+                        results_display,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # 根据模型类型添加效率值解释
+                    if st.session_state.get('dea_model') == 'Super-SBM':
                         st.markdown("""
-                        <style>
-                        .efficiency-table {
-                            background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
-                            border-radius: 10px;
-                            padding: 1rem;
-                            margin: 1rem 0;
-                            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
-                        }
-                        </style>
-                        """, unsafe_allow_html=True)
+                        ###  超效率SBM模型效率值解释
                         
-                        st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
-                        st.dataframe(
-                            results_display,
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        | 效率值范围 | 含义 | 解读 |
+                        |-----------|------|------|
+                        | **ρ = 1** | 技术有效（位于前沿面上） | 无法通过减少输入或增加输出进一步改进（在当前参考集中） |
+                        | **ρ > 1** | 超有效（Super-Efficient） | 不仅有效，而且比当前前沿面更优；即使去掉自己，仍被他人投影 |
+                        | **ρ < 1** | 无效 | 存在输入冗余或产出不足，可通过改进达到前沿 |
+                        """)
                         
-                        # 根据模型类型添加效率值解释
-                        if st.session_state.get('dea_model') == 'Super-SBM':
+                        # 超效率SBM模型的详细分析结果
+                        st.subheader("📊 超效率SBM详细分析结果")
+                        
+                        # 投影目标值分析
+                        projection_cols = [col for col in results.columns if '投影目标值' in col]
+                        if projection_cols:
+                            st.markdown("**🎯 投影目标值分析**")
+                            st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
+                            
+                            projection_display = results[['DMU', '效率值'] + projection_cols].copy()
+                            projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            projection_display['效率值'] = projection_display['效率值'].round(4)
+                            
+                            st.dataframe(projection_display, use_container_width=True, hide_index=True)
+                            
                             st.markdown("""
-                            ###  超效率SBM模型效率值解释
-                            
-                            | 效率值范围 | 含义 | 解读 |
-                            |-----------|------|------|
-                            | **ρ = 1** | 技术有效（位于前沿面上） | 无法通过减少输入或增加输出进一步改进（在当前参考集中） |
-                            | **ρ > 1** | 超有效（Super-Efficient） | 不仅有效，而且比当前前沿面更优；即使去掉自己，仍被他人投影 |
-                            | **ρ < 1** | 无效 | 存在输入冗余或产出不足，可通过改进达到前沿 |
+                            **投影目标值说明**：
+                            - **投入投影目标值** = 原始投入值 - 投入松弛变量
+                            - **产出投影目标值** = 原始产出值 + 产出松弛变量
+                            - 投影目标值表示达到效率前沿所需的最优投入产出组合
                             """)
+                        
+                        # 松弛变量详细分析
+                        slack_cols = [col for col in results.columns if 'slacks' in col]
+                        if slack_cols:
+                            st.markdown("**📈 松弛变量详细分析**")
+                            st.markdown("松弛变量表示各DMU与效率前沿的差距：")
                             
-                            # 超效率SBM模型的详细分析结果
-                            st.subheader("📊 超效率SBM详细分析结果")
+                            slack_display = results[['DMU', '效率值'] + slack_cols].copy()
+                            slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            slack_display['效率值'] = slack_display['效率值'].round(4)
                             
-                            # 投影目标值分析
-                            projection_cols = [col for col in results.columns if '投影目标值' in col]
-                            if projection_cols:
-                                st.markdown("**🎯 投影目标值分析**")
-                                st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
-                                
-                                projection_display = results[['DMU', '效率值'] + projection_cols].copy()
-                                projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                                projection_display['效率值'] = projection_display['效率值'].round(4)
-                                
-                                st.dataframe(projection_display, use_container_width=True, hide_index=True)
-                                
-                                st.markdown("""
-                                **投影目标值说明**：
-                                - **投入投影目标值** = 原始投入值 - 投入松弛变量
-                                - **产出投影目标值** = 原始产出值 + 产出松弛变量
-                                - 投影目标值表示达到效率前沿所需的最优投入产出组合
-                                """)
+                            st.dataframe(slack_display, use_container_width=True, hide_index=True)
                             
-                            # 松弛变量详细分析
-                            slack_cols = [col for col in results.columns if 'slacks' in col]
-                            if slack_cols:
-                                st.markdown("**📈 松弛变量详细分析**")
-                                st.markdown("松弛变量表示各DMU与效率前沿的差距：")
-                                
-                                slack_display = results[['DMU', '效率值'] + slack_cols].copy()
-                                slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                                slack_display['效率值'] = slack_display['效率值'].round(4)
-                                
-                                st.dataframe(slack_display, use_container_width=True, hide_index=True)
-                                
-                                st.markdown("""
-                                **松弛变量说明**：
-                                - **投入松弛变量**：表示可以减少的投入量（数值越大，投入冗余越多）
-                                - **产出松弛变量**：表示可以增加的产出量（数值越大，产出不足越多）
-                                - **松弛变量为0**：表示该变量已达到最优水平
-                                """)
-                            
-                            # 规模报酬分析
-                            if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
-                                st.markdown("**📊 规模报酬分析**")
-                                
-                                rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
-                                rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
-                                rts_display['效率值'] = rts_display['效率值'].round(4)
-                                
-                                st.dataframe(rts_display, use_container_width=True, hide_index=True)
-                                
-                                st.markdown("""
-                                **规模报酬分析说明**：
-                                - **规模报酬不变(CRS)**：当前规模最优，建议保持
-                                - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
-                                - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
-                                """)
-                        else:
                             st.markdown("""
-                            ### 📋 效率值解释
-                            - **效率值 = 1**：技术有效，位于效率前沿面上
-                            - **效率值 < 1**：技术无效，存在改进空间
+                            **松弛变量说明**：
+                            - **投入松弛变量**：表示可以减少的投入量（数值越大，投入冗余越多）
+                            - **产出松弛变量**：表示可以增加的产出量（数值越大，产出不足越多）
+                            - **松弛变量为0**：表示该变量已达到最优水平
                             """)
+                        
+                        # 规模报酬分析
+                        if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
+                            st.markdown("**📊 规模报酬分析**")
+                            
+                            rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
+                            rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            rts_display['效率值'] = rts_display['效率值'].round(4)
+                            
+                            st.dataframe(rts_display, use_container_width=True, hide_index=True)
+                            
+                            st.markdown("""
+                            **规模报酬分析说明**：
+                            - **规模报酬不变(CRS)**：当前规模最优，建议保持
+                            - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
+                            - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
+                            """)
+                    else:
+                        st.markdown("""
+                        ### 📋 效率值解释
+                        - **效率值 = 1**：技术有效，位于效率前沿面上
+                        - **效率值 < 1**：技术无效，存在改进空间
+                        """)
                                        
                     # 松弛变量分析（非超效率SBM模型）
                     if st.session_state.get('dea_model') != 'Super-SBM':
@@ -3265,6 +3296,177 @@ def main():
             st.info("请先完成DEA效率分析")
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
+
+# 添加正确的超效率SBM实现
+def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
+    """
+    正确的超效率SBM模型实现
+    
+    参数:
+    - input_data: 投入数据 (n_dmus, n_inputs)
+    - output_data: 产出数据 (n_dmus, n_outputs)
+    - undesirable_outputs: 非期望产出索引列表
+    
+    返回:
+    - efficiency_scores: 效率值数组
+    - slack_inputs: 投入松弛变量
+    - slack_outputs: 产出松弛变量
+    """
+    n_dmus, n_inputs = input_data.shape
+    n_outputs = output_data.shape[1]
+    
+    efficiency_scores = np.zeros(n_dmus)
+    slack_inputs = np.zeros((n_dmus, n_inputs))
+    slack_outputs = np.zeros((n_dmus, n_outputs))
+    
+    # 处理非期望产出
+    if undesirable_outputs is not None and len(undesirable_outputs) > 0:
+        undesirable_indices = undesirable_outputs
+        desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
+        n_desirable = len(desirable_outputs)
+        n_undesirable = len(undesirable_indices)
+    else:
+        desirable_outputs = list(range(n_outputs))
+        n_desirable = n_outputs
+        n_undesirable = 0
+        undesirable_indices = []
+    
+    for dmu in range(n_dmus):
+        # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
+        n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable
+        
+        # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+        # 使用Charnes-Cooper变换：t = 1 / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
+        # 目标函数变为：min t - (1/m)∑(sᵢ⁻/xᵢ₀)
+        c = np.zeros(n_vars + 1)
+        c[n_dmus - 1] = 1  # t的系数
+        
+        # 投入松弛变量的系数
+        for i in range(n_inputs):
+            c[n_dmus - 1 + 1 + i] = -1.0 / (n_inputs * input_data[dmu, i])
+        
+        # 约束条件
+        # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
+        A_eq_inputs = np.zeros((n_inputs, n_vars + 1))
+        b_eq_inputs = np.zeros(n_inputs)
+        
+        for i in range(n_inputs):
+            # λ的系数（排除被评估的DMU）
+            lambda_idx = 0
+            for j in range(n_dmus):
+                if j != dmu:
+                    A_eq_inputs[i, lambda_idx] = input_data[j, i]
+                    lambda_idx += 1
+            A_eq_inputs[i, n_dmus - 1 + 1 + i] = 1  # s⁻的系数
+            b_eq_inputs[i] = input_data[dmu, i]
+        
+        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
+        A_eq_outputs = np.zeros((n_desirable, n_vars + 1))
+        b_eq_outputs = np.zeros(n_desirable)
+        
+        for r_idx, r in enumerate(desirable_outputs):
+            # λ的系数（排除被评估的DMU）
+            lambda_idx = 0
+            for j in range(n_dmus):
+                if j != dmu:
+                    A_eq_outputs[r_idx, lambda_idx] = output_data[j, r]
+                    lambda_idx += 1
+            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = -1  # s⁺的系数
+            b_eq_outputs[r_idx] = output_data[dmu, r]
+        
+        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
+        A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
+        b_eq_undesirable = np.zeros(n_undesirable)
+        
+        for u_idx, u in enumerate(undesirable_indices):
+            # λ的系数（排除被评估的DMU）
+            lambda_idx = 0
+            for j in range(n_dmus):
+                if j != dmu:
+                    A_eq_undesirable[u_idx, lambda_idx] = output_data[j, u]
+                    lambda_idx += 1
+            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = 1  # sᵤ的系数
+            b_eq_undesirable[u_idx] = output_data[dmu, u]
+        
+        # 归一化约束：t + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
+        A_eq_norm = np.zeros((1, n_vars + 1))
+        A_eq_norm[0, n_dmus - 1] = 1  # t的系数
+        
+        # 期望产出项
+        for r_idx, r in enumerate(desirable_outputs):
+            A_eq_norm[0, n_dmus - 1 + n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
+        
+        # 非期望产出项
+        for u_idx, u in enumerate(undesirable_indices):
+            A_eq_norm[0, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, u])
+        
+        b_eq_norm = np.array([1])
+        
+        # 合并等式约束
+        constraints = [A_eq_inputs, A_eq_outputs]
+        b_constraints = [b_eq_inputs, b_eq_outputs]
+        
+        if n_undesirable > 0:
+            constraints.append(A_eq_undesirable)
+            b_constraints.append(b_eq_undesirable)
+        
+        constraints.append(A_eq_norm)
+        b_constraints.append(b_eq_norm)
+        
+        A_eq = np.vstack(constraints)
+        b_eq = np.hstack(b_constraints)
+        
+        # 变量边界：λ ≥ 0, s⁻ ≥ 0, s⁺ ≥ 0, sᵤ ≥ 0, t ≥ 0
+        bounds = [(0, None)] * (n_vars + 1)
+        
+        # 求解线性规划
+        try:
+            from scipy.optimize import linprog
+            result = linprog(c, A_ub=None, b_ub=None, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+            
+            if result.success:
+                t = result.x[n_dmus - 1]
+                if t > 0:
+                    # 提取松弛变量
+                    slack_inputs[dmu] = result.x[n_dmus - 1 + 1:n_dmus - 1 + 1 + n_inputs] / t
+                    
+                    # 期望产出松弛变量
+                    for r_idx, r in enumerate(desirable_outputs):
+                        slack_outputs[dmu, r] = result.x[n_dmus - 1 + n_inputs + 1 + r_idx] / t
+                    
+                    # 非期望产出松弛变量
+                    if n_undesirable > 0:
+                        for u_idx, u in enumerate(undesirable_indices):
+                            u_slack = result.x[n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] / t
+                            slack_outputs[dmu, u] = u_slack
+                    
+                    # 计算超效率SBM效率值
+                    # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
+                    input_inefficiency = np.sum(slack_inputs[dmu] / input_data[dmu]) / n_inputs
+                    numerator = 1 - input_inefficiency
+                    
+                    # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+                    output_inefficiency = 0
+                    for r_idx, r in enumerate(desirable_outputs):
+                        output_inefficiency += slack_outputs[dmu, r] / output_data[dmu, r]
+                    
+                    if n_undesirable > 0:
+                        for u_idx, u in enumerate(undesirable_indices):
+                            output_inefficiency += slack_outputs[dmu, u] / output_data[dmu, u]
+                    
+                    output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
+                    denominator = 1 + output_inefficiency
+                    
+                    efficiency_scores[dmu] = numerator / denominator
+                else:
+                    efficiency_scores[dmu] = np.nan
+            else:
+                efficiency_scores[dmu] = np.nan
+        except Exception as e:
+            print(f"DMU {dmu} 求解失败: {e}")
+            efficiency_scores[dmu] = np.nan
+    
+    return efficiency_scores, slack_inputs, slack_outputs
 
     
 
