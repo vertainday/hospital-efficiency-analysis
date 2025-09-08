@@ -3248,9 +3248,11 @@ def calculate_regular_sbm(input_data, output_data, undesirable_outputs=None, rts
                 t_value = pulp.value(t)
                 if t_value is not None and t_value > 1e-10:
                     # 计算普通SBM效率值
+                    # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
                     input_inefficiency = np.sum([pulp.value(input_slacks[i]) or 0 for i in range(n_inputs)]) / n_inputs
-                    numerator = 1 + input_inefficiency
+                    numerator = 1 - input_inefficiency
                     
+                    # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
                     output_inefficiency = 0
                     for r_idx, r in enumerate(desirable_outputs):
                         output_inefficiency += (pulp.value(output_slacks[r_idx]) or 0) / output_data[dmu, r]
@@ -3260,7 +3262,7 @@ def calculate_regular_sbm(input_data, output_data, undesirable_outputs=None, rts
                     
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                     
-                    denominator = 1 - output_inefficiency
+                    denominator = 1 + output_inefficiency
                     if denominator <= 1e-6:
                         denominator = 1e-6
                     
