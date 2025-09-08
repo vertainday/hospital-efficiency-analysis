@@ -1069,15 +1069,32 @@ class DEAWrapper:
         return self.dea.sbm(undesirable_outputs=undesirable_outputs)
     
     def super_sbm(self, undesirable_outputs=None):
-        """超效率SBM模型 - 允许效率值大于1"""
-        # 使用简化的超效率SBM实现
-        efficiency_scores, slack_inputs, slack_outputs = super_sbm_simple(
-            self.input_data, self.output_data, undesirable_outputs
+        """超效率SBM模型 - 允许效率值大于1，包含规模报酬分析"""
+        # 分别计算CR-SBM和VR-SBM
+        crs_scores, crs_slack_inputs, crs_slack_outputs, crs_lambda_sums = super_sbm_correct(
+            self.input_data, self.output_data, undesirable_outputs, rts='crs'
         )
         
-        # 将松弛变量存储到DEA对象中
+        vrs_scores, vrs_slack_inputs, vrs_slack_outputs, vrs_lambda_sums = super_sbm_correct(
+            self.input_data, self.output_data, undesirable_outputs, rts='vrs'
+        )
+        
+        # 使用VR-SBM的结果作为主要效率值（更宽松的约束）
+        efficiency_scores = vrs_scores
+        slack_inputs = vrs_slack_inputs
+        slack_outputs = vrs_slack_outputs
+        
+        # 计算规模报酬
+        rts_status, rts_suggestions = calculate_sbm_rts(crs_scores, vrs_scores, vrs_lambda_sums)
+        
+        # 将结果存储到DEA对象中
         self.dea.slack_inputs = slack_inputs
         self.dea.slack_outputs = slack_outputs
+        self.dea.rts_status = rts_status
+        self.dea.rts_suggestions = rts_suggestions
+        self.dea.crs_scores = crs_scores
+        self.dea.vrs_scores = vrs_scores
+        self.dea.lambda_sums = vrs_lambda_sums
         
         return efficiency_scores
     
@@ -1843,8 +1860,19 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             
             results_df['效率值'] = efficiency_scores
         
-        # 按效率值降序排列
-        results_df = results_df.sort_values('效率值', ascending=False).reset_index(drop=True)
+        # 对于超效率SBM模型，添加规模报酬信息
+        if model_type == 'Super-SBM' and hasattr(dea, 'rts_status'):
+            results_df['规模报酬(RTS)'] = dea.rts_status
+            results_df['规模调整建议'] = dea.rts_suggestions
+            if hasattr(dea, 'crs_scores'):
+                results_df['CR-SBM效率值'] = dea.crs_scores
+            if hasattr(dea, 'vrs_scores'):
+                results_df['VR-SBM效率值'] = dea.vrs_scores
+            if hasattr(dea, 'lambda_sums'):
+                results_df['λ和'] = dea.lambda_sums
+        
+        # 按效率值降序排列，NaN值放在最后
+        results_df = results_df.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
         
         return results_df
 
@@ -2564,23 +2592,30 @@ def main():
                         # 超效率SBM模型的专门结果展示
                         st.markdown("**超效率SBM分析结果（按效率值降序排列）**")
                         
-                        # 按效率值降序排序
-                        results_display = results.sort_values('效率值', ascending=False).reset_index(drop=True)
+                        # 使用results中的规模报酬信息
+                        results_display = results.copy()
+                        
+                        # 按效率值降序排序，NaN值放在最后
+                        results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                         results_display['效率值'] = results_display['效率值'].round(4)
                         results_display['排名'] = range(1, len(results_display) + 1)
                         
                         # 选择要显示的列
                         display_cols = ['排名', 'DMU', '效率值']
                         
+                        # 添加CR-SBM和VR-SBM效率值列
+                        if 'CR-SBM效率值' in results_display.columns:
+                            display_cols.append('CR-SBM效率值')
+                        if 'VR-SBM效率值' in results_display.columns:
+                            display_cols.append('VR-SBM效率值')
+                        if 'λ和' in results_display.columns:
+                            display_cols.append('λ和')
+                        
                         # 添加规模报酬相关列
                         if '规模报酬(RTS)' in results_display.columns:
                             display_cols.append('规模报酬(RTS)')
                         if '规模调整建议' in results_display.columns:
                             display_cols.append('规模调整建议')
-                        if '求解状态' in results_display.columns:
-                            display_cols.append('求解状态')
-                        if '迭代次数' in results_display.columns:
-                            display_cols.append('迭代次数')
                         
                         # 重新排列列顺序
                         results_display = results_display[display_cols]
@@ -2616,7 +2651,7 @@ def main():
                             st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
                             
                             projection_display = results[['DMU', '效率值'] + projection_cols].copy()
-                            projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             projection_display['效率值'] = projection_display['效率值'].round(4)
                             
                             st.dataframe(projection_display, use_container_width=True, hide_index=True)
@@ -2635,7 +2670,7 @@ def main():
                             st.markdown("松弛变量表示各DMU与效率前沿的差距：")
                             
                             slack_display = results[['DMU', '效率值'] + slack_cols].copy()
-                            slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             slack_display['效率值'] = slack_display['效率值'].round(4)
                             
                             st.dataframe(slack_display, use_container_width=True, hide_index=True)
@@ -2651,7 +2686,7 @@ def main():
                             st.markdown("** 规模报酬分析**")
                             
                             rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
-                            rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            rts_display = rts_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             rts_display['效率值'] = rts_display['效率值'].round(4)
                             
                             st.dataframe(rts_display, use_container_width=True, hide_index=True)
@@ -2667,7 +2702,7 @@ def main():
                             st.markdown("**🔧 求解状态分析**")
                             
                             status_display = results[['DMU', '效率值', '求解状态', '迭代次数']].copy()
-                            status_display = status_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            status_display = status_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             status_display['效率值'] = status_display['效率值'].round(4)
                             
                             st.dataframe(status_display, use_container_width=True, hide_index=True)
@@ -2765,7 +2800,7 @@ def main():
                             results_display = results
                         
                         # 按效率值降序排序
-                        results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                        results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                         results_display['效率值'] = results_display['效率值'].round(3)
                         efficiency_col = '效率值'
                         results_display['排名'] = range(1, len(results_display) + 1)
@@ -2816,7 +2851,7 @@ def main():
                             st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
                             
                             projection_display = results[['DMU', '效率值'] + projection_cols].copy()
-                            projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             projection_display['效率值'] = projection_display['效率值'].round(4)
                             
                             st.dataframe(projection_display, use_container_width=True, hide_index=True)
@@ -2835,7 +2870,7 @@ def main():
                             st.markdown("松弛变量表示各DMU与效率前沿的差距：")
                             
                             slack_display = results[['DMU', '效率值'] + slack_cols].copy()
-                            slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             slack_display['效率值'] = slack_display['效率值'].round(4)
                             
                             st.dataframe(slack_display, use_container_width=True, hide_index=True)
@@ -2852,7 +2887,7 @@ def main():
                             st.markdown("**📊 规模报酬分析**")
                             
                             rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
-                            rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            rts_display = rts_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
                             rts_display['效率值'] = rts_display['效率值'].round(4)
                             
                             st.dataframe(rts_display, use_container_width=True, hide_index=True)
@@ -3472,7 +3507,7 @@ def super_sbm_simple(input_data, output_data, undesirable_outputs=None):
     return efficiency_scores, slack_inputs, slack_outputs
 
 # 添加正确的超效率SBM实现
-def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
+def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs'):
     """
     正确的超效率SBM模型实现
     
@@ -3480,11 +3515,13 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
     - input_data: 投入数据 (n_dmus, n_inputs)
     - output_data: 产出数据 (n_dmus, n_outputs)
     - undesirable_outputs: 非期望产出索引列表
+    - rts: 规模报酬假设 ('crs' 或 'vrs')
     
     返回:
     - efficiency_scores: 效率值数组
     - slack_inputs: 投入松弛变量
     - slack_outputs: 产出松弛变量
+    - lambda_sums: λ和数组（用于规模报酬判定）
     """
     n_dmus, n_inputs = input_data.shape
     n_outputs = output_data.shape[1]
@@ -3492,6 +3529,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
     efficiency_scores = np.zeros(n_dmus)
     slack_inputs = np.zeros((n_dmus, n_inputs))
     slack_outputs = np.zeros((n_dmus, n_outputs))
+    lambda_sums = np.zeros(n_dmus)  # 存储每个DMU的λ和
     
     # 处理非期望产出
     if undesirable_outputs is not None and len(undesirable_outputs) > 0:
@@ -3576,6 +3614,17 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
         
         b_eq_norm = np.array([1])
         
+        # VRS约束：∑λⱼ = 1（仅对VRS模型）
+        if rts == 'vrs':
+            A_eq_vrs = np.zeros((1, n_vars + 1))
+            # λ的系数（排除被评估的DMU）
+            for j in range(n_dmus - 1):
+                A_eq_vrs[0, j] = 1
+            b_eq_vrs = np.array([1])
+        else:
+            A_eq_vrs = np.zeros((0, n_vars + 1))
+            b_eq_vrs = np.array([])
+        
         # 合并等式约束
         constraints = [A_eq_inputs, A_eq_outputs]
         b_constraints = [b_eq_inputs, b_eq_outputs]
@@ -3586,6 +3635,11 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
         
         constraints.append(A_eq_norm)
         b_constraints.append(b_eq_norm)
+        
+        # 添加VRS约束（如果适用）
+        if rts == 'vrs':
+            constraints.append(A_eq_vrs)
+            b_constraints.append(b_eq_vrs)
         
         A_eq = np.vstack(constraints)
         b_eq = np.hstack(b_constraints)
@@ -3614,6 +3668,10 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
                             u_slack = result.x[n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] / t
                             slack_outputs[dmu, u] = u_slack
                     
+                    # 计算λ和（用于规模报酬判定）
+                    lambda_vars = result.x[:n_dmus - 1] / t
+                    lambda_sums[dmu] = np.sum(lambda_vars)
+                    
                     # 计算超效率SBM效率值
                     # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
                     input_inefficiency = np.sum(slack_inputs[dmu] / input_data[dmu]) / n_inputs
@@ -3634,19 +3692,84 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None):
                     # 计算效率值，允许超过1
                     efficiency_scores[dmu] = numerator / denominator
                     
-                    # 调试信息
-                    print(f"DMU {dmu}: t={t:.6f}, numerator={numerator:.6f}, denominator={denominator:.6f}, efficiency={efficiency_scores[dmu]:.6f}")
+                    # 详细调试信息
+                    print(f"DMU {dmu}: t={t:.6f}")
+                    print(f"  投入松弛变量: {slack_inputs[dmu]}")
+                    print(f"  产出松弛变量: {slack_outputs[dmu]}")
+                    print(f"  投入无效率: {input_inefficiency:.6f}")
+                    print(f"  产出无效率: {output_inefficiency:.6f}")
+                    print(f"  分子: {numerator:.6f}, 分母: {denominator:.6f}")
+                    print(f"  效率值: {efficiency_scores[dmu]:.6f}")
+                    print("---")
                 else:
                     print(f"DMU {dmu}: t值太小 ({t:.2e})，求解失败")
                     efficiency_scores[dmu] = np.nan
             else:
                 print(f"DMU {dmu}: 线性规划求解失败")
+                print(f"  求解状态: {result.status}")
+                print(f"  求解消息: {result.message}")
+                print(f"  目标函数值: {result.fun}")
+                print(f"  迭代次数: {result.nit}")
                 efficiency_scores[dmu] = np.nan
         except Exception as e:
             print(f"DMU {dmu} 求解失败: {e}")
+            print(f"  异常类型: {type(e).__name__}")
             efficiency_scores[dmu] = np.nan
     
-    return efficiency_scores, slack_inputs, slack_outputs
+    return efficiency_scores, slack_inputs, slack_outputs, lambda_sums
+
+def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
+    """
+    计算SBM模型的规模报酬状态
+    
+    参数:
+    - crs_scores: CR-SBM效率值
+    - vrs_scores: VR-SBM效率值  
+    - lambda_sums: λ和数组
+    
+    返回:
+    - rts_status: 规模报酬状态数组
+    - rts_suggestions: 规模调整建议数组
+    """
+    n_dmus = len(crs_scores)
+    rts_status = []
+    rts_suggestions = []
+    
+    for i in range(n_dmus):
+        if np.isnan(crs_scores[i]) or np.isnan(vrs_scores[i]):
+            rts_status.append("求解失败")
+            rts_suggestions.append("无法判定")
+        else:
+            # 方法1：比较CR-SBM和VR-SBM效率值
+            if abs(crs_scores[i] - vrs_scores[i]) < 1e-6:
+                # ρ_CRS = ρ_VRS，规模报酬不变
+                rts_status.append("CRS")
+                rts_suggestions.append("当前规模最优")
+            elif crs_scores[i] < vrs_scores[i]:
+                # ρ_CRS < ρ_VRS，规模报酬递减
+                rts_status.append("DRS")
+                rts_suggestions.append("规模过大，应缩小")
+            else:
+                # ρ_CRS > ρ_VRS，规模报酬递增
+                rts_status.append("IRS")
+                rts_suggestions.append("规模过小，应扩大")
+            
+            # 方法2：基于λ和的Banker判据（补充验证）
+            if not np.isnan(lambda_sums[i]):
+                if abs(lambda_sums[i] - 1.0) < 1e-6:
+                    # ∑λ = 1，规模报酬不变
+                    if rts_status[-1] != "CRS":
+                        rts_status[-1] += " (λ=1)"
+                elif lambda_sums[i] < 1.0:
+                    # ∑λ < 1，规模报酬递增
+                    if rts_status[-1] != "IRS":
+                        rts_status[-1] += " (λ<1)"
+                else:
+                    # ∑λ > 1，规模报酬递减
+                    if rts_status[-1] != "DRS":
+                        rts_status[-1] += " (λ>1)"
+    
+    return rts_status, rts_suggestions
 
     
 
