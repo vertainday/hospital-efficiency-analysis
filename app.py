@@ -2349,27 +2349,19 @@ def main():
                 model_options = {
                     "CCR模型（规模报酬不变）": {
                         "value": "CCR",
-                        "description": "假定规模报酬不变，主要用来测量技术效率（综合效率）",
-                        "scenario": "🏥 **适用场景**：测量综合技术效率，包含规模效率和技术效率",
-                        "features": "• 假定规模报酬不变（CRS）\n• 测量技术效率（综合效率）\n• 适合规模相近的医院对比"
+                        "description": "假定规模报酬不变，主要用来测量技术效率（综合效率）"
                     },
                     "BCC模型（规模报酬可变）": {
                         "value": "BCC", 
-                        "description": "假定规模报酬可变，主要测算纯技术效率（推荐）",
-                        "scenario": "🏥 **适用场景**：测算纯技术效率，分离规模效率影响（推荐医疗行业使用）",
-                        "features": "• 假定规模报酬可变（VRS）\n• 测算纯技术效率\n• 可以分离技术效率和规模效率的影响"
+                        "description": "假定规模报酬可变，主要测算纯技术效率（推荐）"
                     },
                     "SBM模型（非径向）": {
                         "value": "SBM",
-                        "description": "适用于含非期望产出场景，非径向效率测量",
-                        "scenario": "🏥 **适用场景**：包含不良事件、医疗纠纷等非期望产出的分析",
-                        "features": "• 非径向效率测量\n• 处理非期望产出\n• 更精确的效率评估\n• 效率值范围：(0,1]"
+                        "description": "适用于含非期望产出场景，非径向效率测量"
                     },
                     "超效率SBM模型": {
                         "value": "Super-SBM",
-                        "description": "超效率SBM模型，允许效率值大于1，可对有效DMU进一步排序",
-                        "scenario": "🏥 **适用场景**：需要对高效医院进行进一步排序和比较",
-                        "features": "• 超效率测量\n• 处理非期望产出\n• 效率值范围：(0,∞)\n• 可对有效DMU排序"
+                        "description": "超效率SBM模型，允许效率值大于1，可对有效DMU进一步排序"
                     }
                 }
                 
@@ -2382,26 +2374,17 @@ def main():
                 
                 # 显示模型详细说明
                 model_info = model_options[selected_model]
-                st.markdown(f"**{model_info['scenario']}**")
-                # {model_info['description']}
-                st.markdown(f"**模型特点：**\n{model_info['features']}")
                 
                 # 导向选择（仅对CCR和BCC模型显示）
                 orientation = 'input'  # 默认值
                 if model_info['value'] in ['CCR', 'BCC']:
-                    st.markdown("**📐 选择分析导向**")
+                    st.markdown("**选择分析导向**")
                     orientation_options = {
                         "输入导向（推荐）": {
-                            "value": "input",
-                            "description": "在保持产出不变的前提下，最小化投入资源",
-                            "scenario": "🏥 **适用场景**：资源优化配置，减少浪费（推荐医疗行业使用）",
-                            "features": "• 关注投入效率\n• 适合资源优化\n• 减少资源浪费"
+                            "value": "input"
                         },
                         "输出导向": {
-                            "value": "output", 
-                            "description": "在保持投入不变的前提下，最大化产出效果",
-                            "scenario": "🏥 **适用场景**：提升服务质量，增加产出效果",
-                            "features": "• 关注产出效率\n• 适合服务提升\n• 增加产出效果"
+                            "value": "output"
                         }
                     }
                     
@@ -2409,14 +2392,10 @@ def main():
                         "选择分析导向",
                         options=list(orientation_options.keys()),
                         index=0,  # 默认选择输入导向
-                        help="输入导向是医疗行业最常用的分析方式"
                     )
                     
                     orientation_info = orientation_options[selected_orientation]
                     orientation = orientation_info['value']
-                    st.markdown(f"**{orientation_info['scenario']}**")
-                    # {orientation_info['description']}
-                    st.markdown(f"**导向特点：**\n{orientation_info['features']}")
                 
                 # 非期望产出选择（仅对SBM模型显示）
                 undesirable_outputs = None
@@ -2459,10 +2438,10 @@ def main():
                     
                     rts_options = {
                         "规模报酬可变(VRS)": {
-                            "value": "vrs",
+                            "value": "vrs"
                         },
                         "规模报酬不变(CRS)": {
-                            "value": "crs",
+                            "value": "crs"
                         }
                     }
                     
@@ -2474,7 +2453,6 @@ def main():
                     
                     rts_info = rts_options[selected_rts]
                     rts = rts_info['value']
-                    st.markdown(f"**{rts_info['scenario']}**")
                 else:
                     # 非超效率SBM模型，使用默认的VRS
                     rts = 'vrs'
