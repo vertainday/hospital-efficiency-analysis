@@ -1713,7 +1713,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 efficiency_scores = dea.super_sbm(undesirable_outputs=undesirable_indices)
             else:
                 efficiency_scores = dea.super_sbm()
-            results_dict['超效率值'] = efficiency_scores
+            results_dict['效率值'] = efficiency_scores
             
             # 添加投影目标值（原始值 - 松弛变量）
             if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
@@ -1780,7 +1780,8 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         if '效率值' in results_df.columns:
             efficiency_scores = results_df['效率值'].values
         else:
-            efficiency_scores = results_df['效率值'].values
+            st.error("未找到效率值列，无法进行后续分析")
+            return None
             
         nan_count = np.sum(np.isnan(efficiency_scores))
         if nan_count > 0:
@@ -2539,11 +2540,11 @@ def main():
                     st.subheader("📊 效率分析结果")
 
                     # 检查是否为超效率SBM模型
-                    if st.session_state.get('dea_model') == 'Super-SBM' and '超效率值' in results.columns:
+                    if st.session_state.get('dea_model') == 'Super-SBM':
                         # 超效率SBM模型的专门结果展示
-                        st.markdown("**超效率SBM分析结果（按超效率值降序排列）**")
+                        st.markdown("**超效率SBM分析结果（按效率值降序排列）**")
                         
-                        # 按超效率值降序排序
+                        # 按效率值降序排序
                         results_display = results.sort_values('效率值', ascending=False).reset_index(drop=True)
                         results_display['效率值'] = results_display['效率值'].round(4)
                         results_display['排名'] = range(1, len(results_display) + 1)
@@ -2594,9 +2595,9 @@ def main():
                             st.markdown("**🎯 投影目标值分析**")
                             st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
                             
-                            projection_display = results[['DMU', '超效率值'] + projection_cols].copy()
-                            projection_display = projection_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
-                            projection_display['超效率值'] = projection_display['超效率值'].round(4)
+                            projection_display = results[['DMU', '效率值'] + projection_cols].copy()
+                            projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            projection_display['效率值'] = projection_display['效率值'].round(4)
                             
                             st.dataframe(projection_display, use_container_width=True, hide_index=True)
                             
@@ -2698,17 +2699,17 @@ def main():
                         
                     else:
                         # 检查是否为超效率SBM模型
-                        if st.session_state.get('dea_model') == 'Super-SBM' and '超效率值' in results.columns:
+                        if st.session_state.get('dea_model') == 'Super-SBM':
                             # 超效率SBM模型的专门结果展示
-                            st.markdown("**超效率SBM分析结果（按超效率值降序排列）**")
+                            st.markdown("**超效率SBM分析结果（按效率值降序排列）**")
                             
-                            # 按超效率值降序排序
-                            results_display = results.sort_values('超效率值', ascending=False).reset_index(drop=True)
-                            results_display['超效率值'] = results_display['超效率值'].round(4)
+                            # 按效率值降序排序
+                            results_display = results.sort_values('效率值', ascending=False).reset_index(drop=True)
+                            results_display['效率值'] = results_display['效率值'].round(4)
                             results_display['排名'] = range(1, len(results_display) + 1)
                             
                             # 选择要显示的列
-                            display_cols = ['排名', 'DMU', '超效率值']
+                            display_cols = ['排名', 'DMU', '效率值']
                             
                             # 添加规模报酬相关列
                             if '规模报酬(RTS)' in results_display.columns:
@@ -2731,10 +2732,11 @@ def main():
                             # 按效率值降序排序
                             results_display = results_display.sort_values('效率值', ascending=False).reset_index(drop=True)
                             results_display['效率值'] = results_display['效率值'].round(3)
+                            efficiency_col = '效率值'
                             results_display['排名'] = range(1, len(results_display) + 1)
                             
                             # 重新排列列顺序
-                            results_display = results_display[['排名', 'DMU', '效率值']]
+                            results_display = results_display[['排名', 'DMU', efficiency_col]]
                         
                         # 应用蓝色渐变背景样式
                         st.markdown("""
@@ -2778,9 +2780,9 @@ def main():
                                 st.markdown("**🎯 投影目标值分析**")
                                 st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
                                 
-                                projection_display = results[['DMU', '超效率值'] + projection_cols].copy()
-                                projection_display = projection_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
-                                projection_display['超效率值'] = projection_display['超效率值'].round(4)
+                                projection_display = results[['DMU', '效率值'] + projection_cols].copy()
+                                projection_display = projection_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                                projection_display['效率值'] = projection_display['效率值'].round(4)
                                 
                                 st.dataframe(projection_display, use_container_width=True, hide_index=True)
                                 
@@ -2797,9 +2799,9 @@ def main():
                                 st.markdown("**📈 松弛变量详细分析**")
                                 st.markdown("松弛变量表示各DMU与效率前沿的差距：")
                                 
-                                slack_display = results[['DMU', '超效率值'] + slack_cols].copy()
-                                slack_display = slack_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
-                                slack_display['超效率值'] = slack_display['超效率值'].round(4)
+                                slack_display = results[['DMU', '效率值'] + slack_cols].copy()
+                                slack_display = slack_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                                slack_display['效率值'] = slack_display['效率值'].round(4)
                                 
                                 st.dataframe(slack_display, use_container_width=True, hide_index=True)
                                 
@@ -2814,9 +2816,9 @@ def main():
                             if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
                                 st.markdown("**📊 规模报酬分析**")
                                 
-                                rts_display = results[['DMU', '超效率值', '规模报酬(RTS)', '规模调整建议']].copy()
-                                rts_display = rts_display.sort_values('超效率值', ascending=False).reset_index(drop=True)
-                                rts_display['超效率值'] = rts_display['超效率值'].round(4)
+                                rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
+                                rts_display = rts_display.sort_values('效率值', ascending=False).reset_index(drop=True)
+                                rts_display['效率值'] = rts_display['效率值'].round(4)
                                 
                                 st.dataframe(rts_display, use_container_width=True, hide_index=True)
                                 
