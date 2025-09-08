@@ -3509,7 +3509,7 @@ def super_sbm_simple(input_data, output_data, undesirable_outputs=None):
 # 添加正确的超效率SBM实现
 def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vrs'):
     """
-    正确的超效率SBM模型实现
+    修复后的超效率SBM模型实现
     
     参数:
     - input_data: 投入数据 (n_dmus, n_inputs)
@@ -3547,18 +3547,18 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
         # 变量：λ (n-1个，排除被评估的DMU), s⁻ (m个), s⁺ (s个), sᵤ (d个)
         n_vars = n_dmus - 1 + n_inputs + n_desirable + n_undesirable
         
-        # 目标函数：min ρ* = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
-        # 使用Charnes-Cooper变换：t = 1 / (1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
-        # 目标函数变为：min t - (1/m)∑(sᵢ⁻/xᵢ₀)
+        # 修复1: 目标函数 - 超效率SBM应为 min t + (1/m)∑(sᵢ⁻/xᵢ₀)
+        # 使用Charnes-Cooper变换：t = 1 / (1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)))
         c = np.zeros(n_vars + 1)
         c[n_dmus - 1] = 1  # t的系数
         
-        # 投入松弛变量的系数
+        # 投入松弛变量的系数 - 修复2: 使用正号（超效率SBM）
         for i in range(n_inputs):
-            c[n_dmus - 1 + 1 + i] = -1.0 / (n_inputs * input_data[dmu, i])
+            c[n_dmus - 1 + 1 + i] = 1.0 / (n_inputs * input_data[dmu, i])
         
-        # 约束条件
-        # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ - sᵢ⁻
+        # 修复3: 约束条件 - 超效率SBM的松弛变量符号与标准SBM相反
+        
+        # 投入约束：∑(j≠0) λⱼxᵢⱼ = xᵢ₀ + sᵢ⁻
         A_eq_inputs = np.zeros((n_inputs, n_vars + 1))
         b_eq_inputs = np.zeros(n_inputs)
         
@@ -3569,10 +3569,10 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_inputs[i, lambda_idx] = input_data[j, i]
                     lambda_idx += 1
-            A_eq_inputs[i, n_dmus - 1 + 1 + i] = 1  # s⁻的系数
+            A_eq_inputs[i, n_dmus - 1 + 1 + i] = -1  # s⁻的系数（修复：使用-1）
             b_eq_inputs[i] = input_data[dmu, i]
         
-        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ + sᵣ⁺
+        # 期望产出约束：∑(j≠0) λⱼyᵣⱼ = yᵣ₀ - sᵣ⁺
         A_eq_outputs = np.zeros((n_desirable, n_vars + 1))
         b_eq_outputs = np.zeros(n_desirable)
         
@@ -3583,10 +3583,10 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_outputs[r_idx, lambda_idx] = output_data[j, r]
                     lambda_idx += 1
-            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = -1  # s⁺的系数
+            A_eq_outputs[r_idx, n_dmus - 1 + n_inputs + 1 + r_idx] = 1  # s⁺的系数（修复：使用1）
             b_eq_outputs[r_idx] = output_data[dmu, r]
         
-        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ - sᵤᵤ
+        # 非期望产出约束：∑(j≠0) λⱼuᵤⱼ = uᵤ₀ + sᵤᵤ (非期望产出的约束方向与期望产出相反)
         A_eq_undesirable = np.zeros((n_undesirable, n_vars + 1))
         b_eq_undesirable = np.zeros(n_undesirable)
         
@@ -3597,16 +3597,16 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                 if j != dmu:
                     A_eq_undesirable[u_idx, lambda_idx] = output_data[j, u]
                     lambda_idx += 1
-            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = 1  # sᵤ的系数
+            A_eq_undesirable[u_idx, n_dmus - 1 + n_inputs + n_desirable + 1 + u_idx] = -1  # sᵤ的系数（修复：使用-1）
             b_eq_undesirable[u_idx] = output_data[dmu, u]
         
-        # 归一化约束：t + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
+        # 修复4: 归一化约束 - 超效率SBM的归一化约束应为 t - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀)) = 1
         A_eq_norm = np.zeros((1, n_vars + 1))
         A_eq_norm[0, n_dmus - 1] = 1  # t的系数
         
         # 期望产出项
         for r_idx, r in enumerate(desirable_outputs):
-            A_eq_norm[0, n_dmus - 1 + n_inputs + 1 + r_idx] = 1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
+            A_eq_norm[0, n_dmus - 1 + n_inputs + 1 + r_idx] = -1.0 / ((n_desirable + n_undesirable) * output_data[dmu, r])
         
         # 非期望产出项
         for u_idx, u in enumerate(undesirable_indices):
@@ -3654,7 +3654,7 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
             
             if result.success:
                 t = result.x[n_dmus - 1]
-                if t > 1e-10:  # 使用更小的阈值而不是0
+                if t > 1e-10:
                     # 提取松弛变量
                     slack_inputs[dmu] = result.x[n_dmus - 1 + 1:n_dmus - 1 + 1 + n_inputs] / t
                     
@@ -3672,35 +3672,35 @@ def super_sbm_correct(input_data, output_data, undesirable_outputs=None, rts='vr
                     lambda_vars = result.x[:n_dmus - 1] / t
                     lambda_sums[dmu] = np.sum(lambda_vars)
                     
-                    # 计算超效率SBM效率值
-                    # 分子：1 - (1/m)∑(sᵢ⁻/xᵢ₀)
+                    # 修复5: 计算超效率SBM效率值 - 使用正确的公式
+                    # 分子：1 + (1/m)∑(sᵢ⁻/xᵢ₀)
                     input_inefficiency = np.sum(slack_inputs[dmu] / input_data[dmu]) / n_inputs
-                    numerator = 1 - input_inefficiency
+                    numerator = 1 + input_inefficiency
                     
-                    # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+                    # 分母：1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
                     output_inefficiency = 0
                     for r_idx, r in enumerate(desirable_outputs):
                         output_inefficiency += slack_outputs[dmu, r] / output_data[dmu, r]
                     
                     if n_undesirable > 0:
                         for u_idx, u in enumerate(undesirable_indices):
-                            output_inefficiency += slack_outputs[dmu, u] / output_data[dmu, u]
+                            output_inefficiency -= slack_outputs[dmu, u] / output_data[dmu, u]
                     
                     output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-                    denominator = 1 + output_inefficiency
+                    
+                    # 修复6: 添加分母检查，避免除以零或负数
+                    denominator = 1 - output_inefficiency
+                    if denominator <= 0:
+                        print(f"DMU {dmu}: 分母非正 ({denominator:.6f}), 设置为最小值")
+                        denominator = 1e-6
                     
                     # 计算效率值，允许超过1
                     efficiency_scores[dmu] = numerator / denominator
                     
-                    # 详细调试信息
-                    print(f"DMU {dmu}: t={t:.6f}")
-                    print(f"  投入松弛变量: {slack_inputs[dmu]}")
-                    print(f"  产出松弛变量: {slack_outputs[dmu]}")
-                    print(f"  投入无效率: {input_inefficiency:.6f}")
-                    print(f"  产出无效率: {output_inefficiency:.6f}")
-                    print(f"  分子: {numerator:.6f}, 分母: {denominator:.6f}")
-                    print(f"  效率值: {efficiency_scores[dmu]:.6f}")
-                    print("---")
+                    # 修复7: 确保效率值为正
+                    if efficiency_scores[dmu] < 0:
+                        print(f"DMU {dmu}: 效率值为负, 重置为0.001")
+                        efficiency_scores[dmu] = 0.001
                 else:
                     print(f"DMU {dmu}: t值太小 ({t:.2e})，求解失败")
                     efficiency_scores[dmu] = np.nan
