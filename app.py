@@ -614,7 +614,7 @@ class SuperEfficiencySBMModel:
                     
                     for u_idx, u in enumerate(undesirable_indices):
                         constraint = (self.data.output_data[dmu, u] == 
-                                     pulp.lpSum([lambda_vars2[j] * self.data.output_data[j, u] for j in range(n_dmus)]) + 
+                                     pulp.lpSum([lambda_vars2[j] * self.data.output_data[j, u] for j in range(n_dmus)]) - 
                                      undesirable_slacks[u_idx])
                         prob2 += constraint, f"undesirable_eq_constraint_{u_idx}"
                     
@@ -636,7 +636,8 @@ class SuperEfficiencySBMModel:
                             output_inefficiency += (pulp.value(output_slacks[r_idx]) or 0) / self.data.output_data[dmu, r]
                         
                         for u_idx, u in enumerate(undesirable_indices):
-                            output_inefficiency += (pulp.value(undesirable_slacks[u_idx]) or 0) / self.data.output_data[dmu, u]
+                            # 非期望产出的松弛变量需要取负值
+                            output_inefficiency += -(pulp.value(undesirable_slacks[u_idx]) or 0) / self.data.output_data[dmu, u]
                         
                         output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
                         
@@ -746,13 +747,13 @@ class SuperEfficiencySBMModel:
             
             for r_idx, r in enumerate(desirable_outputs):
                 constraint = (self.data.output_data[dmu, r] == 
-                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
+                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) + 
                              output_slacks[r_idx])
                 prob2 += constraint, f"output_eq_constraint_{r_idx}"
             
             for u_idx, u in enumerate(undesirable_indices):
                 constraint = (self.data.output_data[dmu, u] == 
-                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
+                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) - 
                              undesirable_slacks[u_idx])
                 prob2 += constraint, f"undesirable_eq_constraint_{u_idx}"
             
@@ -775,7 +776,8 @@ class SuperEfficiencySBMModel:
                 slack_o[r] = pulp.value(output_slacks[r_idx]) or 0
             
             for u_idx, u in enumerate(undesirable_indices):
-                slack_o[u] = pulp.value(undesirable_slacks[u_idx]) or 0
+                # 非期望产出的松弛变量需要取负值，因为约束条件中使用了减号
+                slack_o[u] = -(pulp.value(undesirable_slacks[u_idx]) or 0)
             
             # 计算λ和
             lambda_sum = sum(pulp.value(lambda_vars2[j]) or 0 for j in range(n_other))
@@ -813,10 +815,10 @@ class SuperEfficiencySBMModel:
             # 投入松弛变量：负值表示投入不足，正值表示投入冗余
             # 产出松弛变量：负值表示产出不足，正值表示产出冗余
             
-            # 调整松弛变量符号以便正确显示
-            # 投入松弛变量：保持原符号（负值表示投入不足）
-            # 产出松弛变量：取负号（负值表示产出不足）
-            slack_o = -slack_o
+            # 超效率SBM中，松弛变量的符号处理：
+            # 投入松弛变量：正值表示投入冗余，负值表示投入不足
+            # 产出松弛变量：正值表示产出不足，负值表示产出冗余
+            # 对于超效率DMU，松弛变量可能为负值，这是正常的
             
             return super_efficiency, slack_i, slack_o, lambda_sum, 'success'
             
@@ -1197,26 +1199,16 @@ class DEAWrapper:
         self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
         self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
         
-        print(f"调试：开始提取松弛变量，DMU数量: {self.n_dmus}, 投入数量: {self.n_inputs}, 产出数量: {self.n_outputs}")
-        
         for i, dmu_name in enumerate(data.dmu_names):
             if dmu_name in result.input_slacks:
                 for j, input_name in enumerate(data.input_names):
                     slack_value = result.input_slacks[dmu_name].get(input_name, 0)
                     self.slack_inputs[i, j] = slack_value
-                    if abs(slack_value) > 1e-6:  # 只打印非零松弛变量
-                        print(f"调试：DMU {dmu_name} 投入松弛变量 {input_name}: {slack_value}")
-            else:
-                print(f"调试：DMU {dmu_name} 没有投入松弛变量数据")
             
             if dmu_name in result.output_slacks:
                 for j, output_name in enumerate(data.output_names):
                     slack_value = result.output_slacks[dmu_name].get(output_name, 0)
                     self.slack_outputs[i, j] = slack_value
-                    if abs(slack_value) > 1e-6:  # 只打印非零松弛变量
-                        print(f"调试：DMU {dmu_name} 产出松弛变量 {output_name}: {slack_value}")
-            else:
-                print(f"调试：DMU {dmu_name} 没有产出松弛变量数据")
             
             if dmu_name in result.lambda_variables:
                 for j, other_dmu in enumerate(data.dmu_names):
@@ -1949,14 +1941,12 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             
             # 添加投影目标值（原始值 - 松弛变量）
             if hasattr(dea, 'slack_inputs') and dea.slack_inputs is not None:
-                print(f"调试：生成投入投影目标值，投入变量数量: {len(input_vars)}")
                 for i, var in enumerate(input_vars):
                     # 投影目标值 = 原始值 - slack（松弛变量为负表示需要增加投入）
                     projection = np.zeros(len(input_data))
                     for dmu in range(len(input_data)):
                         projection[dmu] = input_data[dmu, i] - dea.slack_inputs[dmu, i]
                     results_dict[f'{var}_投影目标值'] = projection
-                    print(f"调试：已添加 {var}_投影目标值")
             
             if hasattr(dea, 'slack_outputs') and dea.slack_outputs is not None:
                 # 获取非期望产出的变量名列表（用于投影计算）
@@ -1965,9 +1955,6 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                     for var_name in undesirable_outputs:
                         if var_name in output_vars:
                             undesirable_var_names.append(var_name)
-                
-                print(f"调试：生成产出投影目标值，产出变量数量: {len(output_vars)}")
-                print(f"调试：非期望产出变量: {undesirable_var_names}")
                 
                 for r, var in enumerate(output_vars):
                     # 投影目标值计算：
@@ -1982,7 +1969,6 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                             # 期望产出：投影 = 原始值 + slack
                             projection[dmu] = output_data[dmu, r] + dea.slack_outputs[dmu, r]
                     results_dict[f'{var}_投影目标值'] = projection
-                    print(f"调试：已添加 {var}_投影目标值")
             
             # 添加规模报酬分析
             if hasattr(dea, 'rts_status') and hasattr(dea, 'rts_suggestions'):
@@ -2004,18 +1990,14 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
 
         # 添加松弛变量 - 使用原始列名
         if hasattr(dea, 'slack_inputs') and dea.slack_inputs is not None:
-            print(f"调试：添加投入松弛变量，形状: {dea.slack_inputs.shape}")
             for i, var in enumerate(input_vars):
                 slack_values = dea.slack_inputs[:, i]
                 results_dict[f'{var}_slacks'] = slack_values
-                print(f"调试：已添加 {var}_slacks，非零值数量: {np.count_nonzero(slack_values)}")
         
         if hasattr(dea, 'slack_outputs') and dea.slack_outputs is not None:
-            print(f"调试：添加产出松弛变量，形状: {dea.slack_outputs.shape}")
             for r, var in enumerate(output_vars):
                 slack_values = dea.slack_outputs[:, r]
                 results_dict[f'{var}_slacks'] = slack_values
-                print(f"调试：已添加 {var}_slacks，非零值数量: {np.count_nonzero(slack_values)}")
 
         # 转为DataFrame
         results_df = pd.DataFrame(results_dict)
@@ -2830,11 +2812,9 @@ def main():
                         # 投影目标值分析
                         projection_cols = [col for col in results.columns if '投影目标值' in col]
                         if projection_cols:
-                            st.markdown("**🎯 投影目标值分析**")
+                            st.markdown("**投影目标值分析**")
                             st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
                             
-                            # 调试信息：显示所有投影目标值列
-                            st.markdown(f"**调试信息**：找到 {len(projection_cols)} 个投影目标值列：{projection_cols}")
                             
                             projection_display = results[['DMU', '效率值'] + projection_cols].copy()
                             projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
@@ -2853,18 +2833,6 @@ def main():
                         slack_cols = [col for col in results.columns if 'slacks' in col]
                         if slack_cols:
                             st.markdown("**松弛变量详细分析**")
-                            st.markdown("松弛变量表示各DMU与效率前沿的差距：")
-                            
-                            # 调试信息：显示松弛变量列
-                            st.markdown(f"**调试信息**：找到 {len(slack_cols)} 个松弛变量列：{slack_cols}")
-                            
-                            # 检查松弛变量是否有非零值
-                            non_zero_counts = {}
-                            for col in slack_cols:
-                                non_zero_count = (results[col] != 0).sum()
-                                non_zero_counts[col] = non_zero_count
-                            
-                            st.markdown(f"**调试信息**：各松弛变量列的非零值数量：{non_zero_counts}")
                             
                             slack_display = results[['DMU', '效率值'] + slack_cols].copy()
                             slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
@@ -2893,16 +2861,6 @@ def main():
                             - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
                             - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
                             """)
-                        
-                        # 求解状态分析
-                        if '求解状态' in results.columns and '迭代次数' in results.columns:
-                            st.markdown("**🔧 求解状态分析**")
-                            
-                            status_display = results[['DMU', '效率值', '求解状态', '迭代次数']].copy()
-                            status_display = status_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            status_display= format_efficiency_values(status_display, '效率值')
-                            
-                            st.dataframe(status_display, use_container_width=True, hide_index=True)
                         
                         # 求解状态统计
                         if '求解状态' in results.columns:
