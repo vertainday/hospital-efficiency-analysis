@@ -1102,6 +1102,11 @@ class DEAWrapper:
         self.max_iter = max_iter
         self.tolerance = tolerance
         
+        # 添加维度属性
+        self.n_dmus = self.input_data.shape[0]
+        self.n_inputs = self.input_data.shape[1]
+        self.n_outputs = self.output_data.shape[1]
+        
         # 修复numpy数组的布尔值判断问题
         if dmu_names is not None:
             # 检查是否是可迭代的且不是字符串
@@ -1892,19 +1897,19 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             results_dict['效率值'] = efficiency_scores
             
             # 添加投影目标值（原始值 - 松弛变量）
-            if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+            if hasattr(dea, 'slack_inputs') and dea.slack_inputs is not None:
                 for i, var in enumerate(input_vars):
                     # 对于效率值≥1的DMU，投影 = 原始值 + |slack|
                     # 对于效率值<1的DMU，投影 = 原始值 - |slack|
                     projection = np.zeros(len(input_data))
                     for dmu in range(len(input_data)):
                         if efficiency_scores[dmu] >= 1.0:
-                            projection[dmu] = input_data[dmu, i] + abs(dea.dea.slack_inputs[dmu, i])
+                            projection[dmu] = input_data[dmu, i] + abs(dea.slack_inputs[dmu, i])
                         else:
-                            projection[dmu] = input_data[dmu, i] - abs(dea.dea.slack_inputs[dmu, i])
+                            projection[dmu] = input_data[dmu, i] - abs(dea.slack_inputs[dmu, i])
                     results_dict[f'{var}_投影目标值'] = projection
             
-            if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+            if hasattr(dea, 'slack_outputs') and dea.slack_outputs is not None:
                 # 获取非期望产出的变量名列表（用于投影计算）
                 undesirable_var_names = []
                 if undesirable_outputs:
@@ -1923,42 +1928,42 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                     for dmu in range(len(output_data)):
                         if var in undesirable_var_names:
                             if efficiency_scores[dmu] >= 1.0:
-                                projection[dmu] = output_data[dmu, r] + abs(dea.dea.slack_outputs[dmu, r])
+                                projection[dmu] = output_data[dmu, r] + abs(dea.slack_outputs[dmu, r])
                             else:
-                                projection[dmu] = output_data[dmu, r] - abs(dea.dea.slack_outputs[dmu, r])
+                                projection[dmu] = output_data[dmu, r] - abs(dea.slack_outputs[dmu, r])
                         else:
                             if efficiency_scores[dmu] >= 1.0:
-                                projection[dmu] = output_data[dmu, r] - abs(dea.dea.slack_outputs[dmu, r])
+                                projection[dmu] = output_data[dmu, r] - abs(dea.slack_outputs[dmu, r])
                             else:
-                                projection[dmu] = output_data[dmu, r] + abs(dea.dea.slack_outputs[dmu, r])
+                                projection[dmu] = output_data[dmu, r] + abs(dea.slack_outputs[dmu, r])
                     results_dict[f'{var}_投影目标值'] = projection
             
             # 添加规模报酬分析
-            if hasattr(dea.dea, 'rts_status') and hasattr(dea.dea, 'rts_suggestions'):
-                results_dict['规模报酬(RTS)'] = dea.dea.rts_status
-                results_dict['规模调整建议'] = dea.dea.rts_suggestions
+            if hasattr(dea, 'rts_status') and hasattr(dea, 'rts_suggestions'):
+                results_dict['规模报酬(RTS)'] = dea.rts_status
+                results_dict['规模调整建议'] = dea.rts_suggestions
             
             # 添加CR-SBM和VR-SBM效率值
-            if hasattr(dea.dea, 'crs_scores'):
-                results_dict['CR-SBM效率值'] = dea.dea.crs_scores
-            if hasattr(dea.dea, 'vrs_scores'):
-                results_dict['VR-SBM效率值'] = dea.dea.vrs_scores
+            if hasattr(dea, 'crs_scores'):
+                results_dict['CR-SBM效率值'] = dea.crs_scores
+            if hasattr(dea, 'vrs_scores'):
+                results_dict['VR-SBM效率值'] = dea.vrs_scores
             
             # 添加求解状态
-            if hasattr(dea.dea, 'solution_status'):
-                results_dict['求解状态'] = dea.dea.solution_status
+            if hasattr(dea, 'solution_status'):
+                results_dict['求解状态'] = dea.solution_status
         else:
             st.error("不支持的模型类型，请选择 CCR、BCC、SBM 或 Super-SBM")
             return None
 
         # 添加松弛变量 - 使用原始列名
-        if hasattr(dea.dea, 'slack_inputs') and dea.dea.slack_inputs is not None:
+        if hasattr(dea, 'slack_inputs') and dea.slack_inputs is not None:
             for i, var in enumerate(input_vars):
-                results_dict[f'{var}_slacks'] = dea.dea.slack_inputs[:, i]
+                results_dict[f'{var}_slacks'] = dea.slack_inputs[:, i]
         
-        if hasattr(dea.dea, 'slack_outputs') and dea.dea.slack_outputs is not None:
+        if hasattr(dea, 'slack_outputs') and dea.slack_outputs is not None:
             for r, var in enumerate(output_vars):
-                results_dict[f'{var}_slacks'] = dea.dea.slack_outputs[:, r]
+                results_dict[f'{var}_slacks'] = dea.slack_outputs[:, r]
 
         # 转为DataFrame
         results_df = pd.DataFrame(results_dict)
