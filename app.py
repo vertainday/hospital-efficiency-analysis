@@ -485,7 +485,7 @@ class SuperEfficiencySBMModel:
             solution_status[dmu] = status
             
             if status == 'success':
-                print(f"  DMU {dmu+1} 超效率值: {super_efficiency:.6f}")
+                print(f"  DMU {dmu+1} 超效率值: {super_efficiency:.5f}")
             else:
                 print(f"  DMU {dmu+1} 无解")
         
@@ -804,7 +804,7 @@ class SuperEfficiencySBMModel:
             
             # 验证超效率值 >= 1（理论上应该总是成立）
             if super_efficiency < 1.0:
-                print(f"  警告：DMU {dmu+1} 超效率值 < 1: {super_efficiency:.6f}")
+                print(f"  警告：DMU {dmu+1} 超效率值 < 1: {super_efficiency:.5f}")
                 # 如果超效率值 < 1，说明计算有问题，将其设为1
                 super_efficiency = 1.0
             
@@ -2019,7 +2019,7 @@ def create_efficiency_chart(results):
                 y=results[col],
                 name=col,
                 marker_color=color,
-                text=[f'{val:.3f}' for val in results[col]],
+                text=[f'{val:.5f}' for val in results[col]],
                 textposition='outside',
                 showlegend=True
             )
@@ -2733,7 +2733,7 @@ def main():
                         
                         # 按效率值降序排序，NaN值放在最后
                         results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                        results_display['效率值'] = results_display['效率值'].round(4)
+                        results_display['效率值'] = results_display['效率值'].round(5)
                         results_display['排名'] = range(1, len(results_display) + 1)
                         
                         # 只显示四列：DMU、效率值、规模报酬、规模调整建议
@@ -2780,7 +2780,7 @@ def main():
                             
                             projection_display = results[['DMU', '效率值'] + projection_cols].copy()
                             projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            projection_display['效率值'] = projection_display['效率值'].round(4)
+                            projection_display['效率值'] = projection_display['效率值'].round(5)
                             
                             st.dataframe(projection_display, use_container_width=True, hide_index=True)
                             
@@ -2799,7 +2799,7 @@ def main():
                             
                             slack_display = results[['DMU', '效率值'] + slack_cols].copy()
                             slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            slack_display['效率值'] = slack_display['效率值'].round(4)
+                            slack_display['效率值'] = slack_display['效率值'].round(5)
                             
                             st.dataframe(slack_display, use_container_width=True, hide_index=True)
                             
@@ -2815,7 +2815,7 @@ def main():
                             
                             rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
                             rts_display = rts_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            rts_display['效率值'] = rts_display['效率值'].round(4)
+                            rts_display['效率值'] = rts_display['效率值'].round(5)
                             
                             st.dataframe(rts_display, use_container_width=True, hide_index=True)
                             
@@ -2831,7 +2831,7 @@ def main():
                             
                             status_display = results[['DMU', '效率值', '求解状态', '迭代次数']].copy()
                             status_display = status_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            status_display['效率值'] = status_display['效率值'].round(4)
+                            status_display['效率值'] = status_display['效率值'].round(5)
                             
                             st.dataframe(status_display, use_container_width=True, hide_index=True)
                         
@@ -2892,9 +2892,9 @@ def main():
                         results_display = results.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
                         
                         # 格式化效率值
-                        results_display['综合效率(TE)'] = results_display['综合效率(TE)'].round(4)
-                        results_display['纯技术效率(PTE)'] = results_display['纯技术效率(PTE)'].round(4)
-                        results_display['规模效率(SE)'] = results_display['规模效率(SE)'].round(4)
+                        results_display['综合效率(TE)'] = results_display['综合效率(TE)'].round(5)
+                        results_display['纯技术效率(PTE)'] = results_display['纯技术效率(PTE)'].round(5)
+                        results_display['规模效率(SE)'] = results_display['规模效率(SE)'].round(5)
                         results_display['排名'] = range(1, len(results_display) + 1)
                         
                         # 重新排列列顺序
@@ -2939,7 +2939,7 @@ def main():
                         
                         # 按效率值降序排序
                         results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                        results_display['效率值'] = results_display['效率值'].round(3)
+                        results_display['效率值'] = results_display['效率值'].round(5)
                         efficiency_col = '效率值'
                         results_display['排名'] = range(1, len(results_display) + 1)
                         
@@ -2999,7 +2999,7 @@ def main():
                             
                             projection_display = results[['DMU', '效率值'] + projection_cols].copy()
                             projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            projection_display['效率值'] = projection_display['效率值'].round(4)
+                            projection_display['效率值'] = projection_display['效率值'].round(5)
                             
                             st.dataframe(projection_display, use_container_width=True, hide_index=True)
                             
@@ -3018,7 +3018,7 @@ def main():
                             
                             slack_display = results[['DMU', '效率值'] + slack_cols].copy()
                             slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            slack_display['效率值'] = slack_display['效率值'].round(4)
+                            slack_display['效率值'] = slack_display['效率值'].round(5)
                             
                             st.dataframe(slack_display, use_container_width=True, hide_index=True)
                             
@@ -3035,7 +3035,7 @@ def main():
                             
                             rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
                             rts_display = rts_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            rts_display['效率值'] = rts_display['效率值'].round(4)
+                            rts_display['效率值'] = rts_display['效率值'].round(5)
                             
                             st.dataframe(rts_display, use_container_width=True, hide_index=True)
                             
