@@ -455,27 +455,34 @@ class SuperEfficiencySBMModel:
         print(f"有效DMU索引: {[i+1 for i in efficient_dmus]}")
         
         # 初始化结果数组
-        efficiency_scores = np.zeros(n_dmus)  # 初始化为0，稍后填充
+        efficiency_scores = np.full(n_dmus, np.nan)  # 初始化为NaN，稍后填充
         slack_inputs = np.zeros((n_dmus, n_inputs))
         slack_outputs = np.zeros((n_dmus, n_outputs))
         lambda_sums = np.zeros(n_dmus)
-        solution_status = ['success'] * n_dmus
+        solution_status = ['pending'] * n_dmus
         
         # 获取普通SBM的松弛变量（用于无效DMU）
         print("获取普通SBM松弛变量...")
         for dmu in range(n_dmus):
             if dmu not in efficient_dmus:  # 只对无效DMU获取松弛变量
                 efficiency_scores[dmu] = regular_sbm_scores[dmu]  # 无效DMU使用普通SBM结果
-                result = self._solve_sbm_two_stage(dmu, 
-                                                 list(range(n_outputs)) if self.undesirable_outputs is None 
-                                                 else [var for var in range(n_outputs) if var not in self.undesirable_outputs],
-                                                 self.undesirable_outputs or [])
-                if isinstance(result, tuple) and len(result) >= 4:
-                    _, slack_i, slack_o, lambda_sum, status = result
-                    slack_inputs[dmu] = slack_i
-                    slack_outputs[dmu] = slack_o
-                    lambda_sums[dmu] = lambda_sum
-                    solution_status[dmu] = status
+                solution_status[dmu] = 'success'  # 普通SBM已成功
+                
+                # 获取松弛变量（可选）
+                try:
+                    result = self._solve_sbm_two_stage(dmu, 
+                                                     list(range(n_outputs)) if self.undesirable_outputs is None 
+                                                     else [var for var in range(n_outputs) if var not in self.undesirable_outputs],
+                                                     self.undesirable_outputs or [])
+                    if isinstance(result, tuple) and len(result) >= 4:
+                        _, slack_i, slack_o, lambda_sum, status = result
+                        slack_inputs[dmu] = slack_i
+                        slack_outputs[dmu] = slack_o
+                        lambda_sums[dmu] = lambda_sum
+                        solution_status[dmu] = status
+                except Exception as e:
+                    print(f"  DMU {dmu+1} 松弛变量获取失败: {e}")
+                    solution_status[dmu] = 'slack_failed'
         
         # 第二步：只对有效DMU计算超效率SBM模型
         print("第二步：对有效DMU计算超效率SBM模型...")
@@ -509,8 +516,12 @@ class SuperEfficiencySBMModel:
         # 将结果存储到DEAResult对象中
         print(f"最终效率值: {efficiency_scores}")
         for i, dmu_name in enumerate(self.data.dmu_names):
-            efficiency = efficiency_scores[i] if not np.isnan(efficiency_scores[i]) else float('inf')
-            status = solution_status[i] if i < len(solution_status) else 'unknown'
+            if np.isnan(efficiency_scores[i]):
+                efficiency = 1.0  # 如果为NaN，使用普通SBM值
+                status = 'fallback_to_regular_sbm'
+            else:
+                efficiency = efficiency_scores[i]
+                status = solution_status[i] if i < len(solution_status) else 'unknown'
             
             # 构建lambda变量字典
             lambda_vars = {f"DMU_{j+1}": 0.0 for j in range(self.data.n_dmu)}
@@ -784,19 +795,23 @@ class SuperEfficiencySBMModel:
                 print(f"  DMU {dmu+1} 超效率SBM求解失败，状态: {prob.status}")
                 return float('inf'), np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
 
-            t_val = pulp.value(t)
-            mu_sum = sum(pulp.value(mu_vars[j]) for j in range(n_other))
-            slack_i = np.array([pulp.value(input_slacks[i]) for i in range(n_inputs)])
+            t_val = pulp.value(t) or 0
+            mu_sum = sum(pulp.value(mu_vars[j]) or 0 for j in range(n_other))
+            slack_i = np.array([pulp.value(input_slacks[i]) or 0 for i in range(n_inputs)])
             slack_o = np.zeros(n_outputs)
 
             for r in desirable_outputs:
-                slack_o[r] = pulp.value(output_slacks[r])
+                slack_o[r] = pulp.value(output_slacks[r]) or 0
             for u in undesirable_indices:
-                slack_o[u] = pulp.value(undesirable_slacks[u])
+                slack_o[u] = pulp.value(undesirable_slacks[u]) or 0
 
             # 计算超效率值：ρ = t - (1/m)Σ(s_i^-/x_i0)
-            input_slack_ratio = sum(slack_i[i] / (self.data.input_data[dmu, i] + 1e-8) for i in range(n_inputs)) / n_inputs
-            super_efficiency = t_val - input_slack_ratio
+            if t_val > 1e-8:  # 确保t_val有效
+                input_slack_ratio = sum(slack_i[i] / (self.data.input_data[dmu, i] + 1e-8) for i in range(n_inputs)) / n_inputs
+                super_efficiency = t_val - input_slack_ratio
+            else:
+                print(f"  ⚠️ 警告：DMU {dmu+1} t值无效: {t_val}")
+                super_efficiency = 1.0  # 回退到普通SBM值
 
             # 超效率值必须 >= 1
             if super_efficiency < 1.0:
