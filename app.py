@@ -627,9 +627,11 @@ class SuperEfficiencySBMModel:
                     
                     if prob2.status == pulp.LpStatusOptimal:
                         # 计算SBM效率值
-                        input_inefficiency = sum(pulp.value(input_slacks[i]) or 0 for i in range(n_inputs)) / n_inputs
-                        output_inefficiency = 0
+                        # 投入无效率：平均投入松弛比例
+                        input_inefficiency = sum((pulp.value(input_slacks[i]) or 0) / self.data.input_data[dmu, i] for i in range(n_inputs)) / n_inputs
                         
+                        # 产出无效率：平均产出松弛比例
+                        output_inefficiency = 0
                         for r_idx, r in enumerate(desirable_outputs):
                             output_inefficiency += (pulp.value(output_slacks[r_idx]) or 0) / self.data.output_data[dmu, r]
                         
@@ -641,10 +643,18 @@ class SuperEfficiencySBMModel:
                         numerator = 1 - input_inefficiency
                         denominator = 1 + output_inefficiency
                         
+                        # 确保效率值在合理范围内
+                        if numerator <= 0:
+                            numerator = 1e-6
                         if denominator <= 1e-6:
                             denominator = 1e-6
                         
-                        return numerator / denominator
+                        efficiency = numerator / denominator
+                        
+                        # 确保效率值在 [0, 1] 范围内
+                        efficiency = max(0.0, min(1.0, efficiency))
+                        
+                        return efficiency
                     else:
                         return 1.0 if self.handle_infeasible == 'set_to_1' else np.nan
                 else:
@@ -775,7 +785,8 @@ class SuperEfficiencySBMModel:
             input_inefficiency = np.sum(slack_i / self.data.input_data[dmu]) / n_inputs
             numerator = 1 + input_inefficiency
             
-            # 分母：1 - (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+            # 分母：1 + (1/(s+d))(∑(sᵣ⁺/yᵣ₀) + ∑(sᵤᵤ/uᵤ₀))
+            # 注意：超效率SBM的分母应该是 1 + output_inefficiency，不是 1 - output_inefficiency
             output_inefficiency = 0
             for r_idx, r in enumerate(desirable_outputs):
                 output_inefficiency += slack_o[r] / self.data.output_data[dmu, r]
@@ -785,7 +796,7 @@ class SuperEfficiencySBMModel:
             
             output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
             
-            denominator = 1 - output_inefficiency
+            denominator = 1 + output_inefficiency
             if denominator <= 1e-6:
                 denominator = 1e-6
             
@@ -797,11 +808,8 @@ class SuperEfficiencySBMModel:
                 # 如果超效率值 < 1，说明计算有问题，将其设为1
                 super_efficiency = 1.0
             
-            # 根据效率值调整松弛变量符号
-            # 超效率值应该总是 >= 1，因为被评估DMU本身是有效的
-            if super_efficiency >= 1.0:
-                slack_i = -slack_i
-                slack_o = -slack_o
+            # 超效率SBM中，松弛变量为负是正常的，表示超效率DMU的超出程度
+            # 不需要调整松弛变量的符号
             
             return super_efficiency, slack_i, slack_o, lambda_sum, 'success'
             
@@ -1899,14 +1907,10 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             # 添加投影目标值（原始值 - 松弛变量）
             if hasattr(dea, 'slack_inputs') and dea.slack_inputs is not None:
                 for i, var in enumerate(input_vars):
-                    # 对于效率值≥1的DMU，投影 = 原始值 + |slack|
-                    # 对于效率值<1的DMU，投影 = 原始值 - |slack|
+                    # 投影目标值 = 原始值 - slack（松弛变量为负表示需要增加投入）
                     projection = np.zeros(len(input_data))
                     for dmu in range(len(input_data)):
-                        if efficiency_scores[dmu] >= 1.0:
-                            projection[dmu] = input_data[dmu, i] + abs(dea.slack_inputs[dmu, i])
-                        else:
-                            projection[dmu] = input_data[dmu, i] - abs(dea.slack_inputs[dmu, i])
+                        projection[dmu] = input_data[dmu, i] - dea.slack_inputs[dmu, i]
                     results_dict[f'{var}_投影目标值'] = projection
             
             if hasattr(dea, 'slack_outputs') and dea.slack_outputs is not None:
@@ -1918,24 +1922,17 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                             undesirable_var_names.append(var_name)
                 
                 for r, var in enumerate(output_vars):
-                    # 对于期望产出：
-                    #   - 效率值≥1: 投影 = 原始值 - |slack|
-                    #   - 效率值<1: 投影 = 原始值 + |slack|
-                    # 对于非期望产出：
-                    #   - 效率值≥1: 投影 = 原始值 + |slack|
-                    #   - 效率值<1: 投影 = 原始值 - |slack|
+                    # 投影目标值计算：
+                    # 对于期望产出：投影 = 原始值 + slack（松弛变量为负表示需要减少产出）
+                    # 对于非期望产出：投影 = 原始值 - slack（松弛变量为负表示需要增加非期望产出）
                     projection = np.zeros(len(output_data))
                     for dmu in range(len(output_data)):
                         if var in undesirable_var_names:
-                            if efficiency_scores[dmu] >= 1.0:
-                                projection[dmu] = output_data[dmu, r] + abs(dea.slack_outputs[dmu, r])
-                            else:
-                                projection[dmu] = output_data[dmu, r] - abs(dea.slack_outputs[dmu, r])
+                            # 非期望产出：投影 = 原始值 - slack
+                            projection[dmu] = output_data[dmu, r] - dea.slack_outputs[dmu, r]
                         else:
-                            if efficiency_scores[dmu] >= 1.0:
-                                projection[dmu] = output_data[dmu, r] - abs(dea.slack_outputs[dmu, r])
-                            else:
-                                projection[dmu] = output_data[dmu, r] + abs(dea.slack_outputs[dmu, r])
+                            # 期望产出：投影 = 原始值 + slack
+                            projection[dmu] = output_data[dmu, r] + dea.slack_outputs[dmu, r]
                     results_dict[f'{var}_投影目标值'] = projection
             
             # 添加规模报酬分析
