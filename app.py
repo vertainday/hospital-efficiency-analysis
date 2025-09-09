@@ -730,66 +730,70 @@ class SuperEfficiencySBMModel:
             n_undesirable = 0
             undesirable_indices = []
         
-        # 超效率SBM模型：使用Charnes-Cooper变换
-        # 目标函数：min ρ = t - (1/m)∑(sᵢ⁻/xᵢ₀)
-        # 约束条件：t·xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (i=1,...,m)
-        #           t·yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (r=1,...,s)
-        #           ∑ⱼ λⱼ = t (VRS)
+        # 超效率SBM模型：使用两阶段方法
+        # 目标函数：min ρ = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(sᵣ⁺/yᵣ₀))
+        # 约束条件：xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (i=1,...,m)
+        #           yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (r=1,...,s)
+        #           ∑ⱼ λⱼ = 1 (VRS)
         #           其中 j ∈ other_dmus (排除被评估DMU)
         
-        prob = pulp.LpProblem(f"SuperSBM_{dmu}", pulp.LpMinimize)
+        # 第一阶段：最小化投入无效率
+        prob1 = pulp.LpProblem(f"SuperSBM_Phase1_{dmu}", pulp.LpMinimize)
         
         # 创建变量
-        t = pulp.LpVariable("t", lowBound=1e-7, upBound=None)  # 变换变量，必须大于0
-        lambda_vars = pulp.LpVariable.dicts("lambda", range(n_other), lowBound=0)
-        input_slacks = pulp.LpVariable.dicts("input_slack", range(n_inputs), lowBound=0)
-        output_slacks = pulp.LpVariable.dicts("output_slack", range(n_desirable), lowBound=0)
-        undesirable_slacks = pulp.LpVariable.dicts("undesirable_slack", range(n_undesirable), lowBound=0)
+        lambda_vars1 = pulp.LpVariable.dicts("lambda1", range(n_other), lowBound=0)
+        input_slacks1 = pulp.LpVariable.dicts("input_slack1", range(n_inputs), lowBound=0)
+        output_slacks1 = pulp.LpVariable.dicts("output_slack1", range(n_desirable), lowBound=0)
+        undesirable_slacks1 = pulp.LpVariable.dicts("undesirable_slack1", range(n_undesirable), lowBound=0)
         
-        # 目标函数：min ρ = t - (1/m)∑(sᵢ⁻/xᵢ₀)
-        # 由于PuLP不支持除法，我们需要使用两阶段方法
-        # 第一阶段：最小化 t
-        prob += t
+        # 目标函数：最小化投入无效率
+        input_inefficiency = pulp.lpSum([input_slacks1[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs
+        prob1 += input_inefficiency
         
-        # 约束条件1：t·xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (投入约束)
+        # 约束条件1：xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (投入约束)
         for i in range(n_inputs):
-            constraint = (t * self.data.input_data[dmu, i] == 
-                         pulp.lpSum([lambda_vars[j] * self.data.input_data[other_dmus[j], i] for j in range(n_other)]) + 
-                         input_slacks[i])
-            prob += constraint, f"input_constraint_{i}"
+            constraint = (self.data.input_data[dmu, i] == 
+                         pulp.lpSum([lambda_vars1[j] * self.data.input_data[other_dmus[j], i] for j in range(n_other)]) + 
+                         input_slacks1[i])
+            prob1 += constraint, f"input_constraint_{i}"
         
-        # 约束条件2：t·yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (期望产出约束)
+        # 约束条件2：yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (期望产出约束)
         for r_idx, r in enumerate(desirable_outputs):
-            constraint = (t * self.data.output_data[dmu, r] == 
-                         pulp.lpSum([lambda_vars[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
-                         output_slacks[r_idx])
-            prob += constraint, f"output_constraint_{r_idx}"
+            constraint = (self.data.output_data[dmu, r] == 
+                         pulp.lpSum([lambda_vars1[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
+                         output_slacks1[r_idx])
+            prob1 += constraint, f"output_constraint_{r_idx}"
         
-        # 约束条件3：t·uᵤ₀ = ∑ⱼ λⱼuᵤⱼ + sᵤ⁻ (非期望产出约束)
+        # 约束条件3：uᵤ₀ = ∑ⱼ λⱼuᵤⱼ + sᵤ⁻ (非期望产出约束)
         for u_idx, u in enumerate(undesirable_indices):
-            constraint = (t * self.data.output_data[dmu, u] == 
-                         pulp.lpSum([lambda_vars[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
-                         undesirable_slacks[u_idx])
-            prob += constraint, f"undesirable_constraint_{u_idx}"
+            constraint = (self.data.output_data[dmu, u] == 
+                         pulp.lpSum([lambda_vars1[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
+                         undesirable_slacks1[u_idx])
+            prob1 += constraint, f"undesirable_constraint_{u_idx}"
         
-        # VRS约束：∑ⱼ λⱼ = t
+        # VRS约束：∑ⱼ λⱼ = 1
         if self.rts == 'vrs':
-            prob += pulp.lpSum([lambda_vars[j] for j in range(n_other)]) == t, "vrs_constraint"
+            prob1 += pulp.lpSum([lambda_vars1[j] for j in range(n_other)]) == 1, "vrs_constraint"
         
         # 求解第一阶段
         try:
-            prob.solve()
+            prob1.solve()
             
             # 检查第一阶段求解状态
-            if prob.status != pulp.LpStatusOptimal:
+            if prob1.status != pulp.LpStatusOptimal:
                 return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
             
-            # 提取t值
-            t_value = pulp.value(t)
-            if t_value is None or t_value <= 0:
-                return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
+            # 提取第一阶段松弛变量
+            slack_i_phase1 = np.array([pulp.value(input_slacks1[i]) or 0 for i in range(n_inputs)])
+            slack_o_phase1 = np.zeros(n_outputs)
             
-            # 第二阶段：最大化松弛变量
+            for r_idx, r in enumerate(desirable_outputs):
+                slack_o_phase1[r] = pulp.value(output_slacks1[r_idx]) or 0
+            
+            for u_idx, u in enumerate(undesirable_indices):
+                slack_o_phase1[u] = pulp.value(undesirable_slacks1[u_idx]) or 0
+            
+            # 第二阶段：在保持第一阶段投入无效率不变的情况下，最大化产出无效率
             prob2 = pulp.LpProblem(f"SuperSBM_Phase2_{dmu}", pulp.LpMaximize)
             
             # 创建第二阶段变量
@@ -798,8 +802,9 @@ class SuperEfficiencySBMModel:
             output_slacks2 = pulp.LpVariable.dicts("output_slack2", range(n_desirable), lowBound=0)
             undesirable_slacks2 = pulp.LpVariable.dicts("undesirable_slack2", range(n_undesirable), lowBound=0)
             
-            # 目标函数：最大化松弛变量
-            prob2 += pulp.lpSum(input_slacks2.values()) + pulp.lpSum(output_slacks2.values()) + pulp.lpSum(undesirable_slacks2.values())
+            # 目标函数：最大化产出无效率
+            output_inefficiency = pulp.lpSum([output_slacks2[r_idx] / self.data.output_data[dmu, r] for r_idx, r in enumerate(desirable_outputs)]) / n_desirable
+            prob2 += output_inefficiency
             
             # 约束条件：等式约束
             for i in range(n_inputs):
@@ -824,30 +829,56 @@ class SuperEfficiencySBMModel:
             if self.rts == 'vrs':
                 prob2 += pulp.lpSum([lambda_vars2[j] for j in range(n_other)]) == 1, "vrs_constraint2"
             
+            # 添加第一阶段约束：保持投入无效率不变
+            prob2 += pulp.lpSum([input_slacks2[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs == pulp.lpSum([slack_i_phase1[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs, "phase1_constraint"
+            
             # 求解第二阶段
             prob2.solve()
             
             # 检查第二阶段求解状态
             if prob2.status != pulp.LpStatusOptimal:
-                return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
-            
-            # 提取松弛变量
-            slack_i = np.array([pulp.value(input_slacks2[i]) or 0 for i in range(n_inputs)])
-            slack_o = np.zeros(n_outputs)
-            
-            for r_idx, r in enumerate(desirable_outputs):
-                slack_o[r] = pulp.value(output_slacks2[r_idx]) or 0
-            
-            for u_idx, u in enumerate(undesirable_indices):
-                slack_o[u] = pulp.value(undesirable_slacks2[u_idx]) or 0
-            
-            # 计算λ和
-            lambda_sum = sum(pulp.value(lambda_vars2[j]) or 0 for j in range(n_other))
+                # 如果第二阶段无解，使用第一阶段结果
+                slack_i = slack_i_phase1
+                slack_o = slack_o_phase1
+                lambda_sum = sum(pulp.value(lambda_vars1[j]) or 0 for j in range(n_other))
+            else:
+                # 提取最终松弛变量
+                slack_i = np.array([pulp.value(input_slacks2[i]) or 0 for i in range(n_inputs)])
+                slack_o = np.zeros(n_outputs)
+                
+                for r_idx, r in enumerate(desirable_outputs):
+                    slack_o[r] = pulp.value(output_slacks2[r_idx]) or 0
+                
+                for u_idx, u in enumerate(undesirable_indices):
+                    slack_o[u] = pulp.value(undesirable_slacks2[u_idx]) or 0
+                
+                # 计算λ和
+                lambda_sum = sum(pulp.value(lambda_vars2[j]) or 0 for j in range(n_other))
             
             # 计算超效率SBM效率值
-            # 超效率SBM公式：ρ = 1 + (1/m)∑(sᵢ⁻/xᵢ₀)
+            # 超效率SBM公式：ρ = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(sᵣ⁺/yᵣ₀))
             input_inefficiency = np.sum(slack_i / self.data.input_data[dmu]) / n_inputs
-            super_efficiency = 1 + input_inefficiency
+            
+            # 计算产出无效率
+            output_inefficiency = 0
+            for r_idx, r in enumerate(desirable_outputs):
+                output_inefficiency += slack_o[r] / self.data.output_data[dmu, r]
+            
+            for u_idx, u in enumerate(undesirable_indices):
+                # 非期望产出的松弛变量需要取负值
+                output_inefficiency += -slack_o[u] / self.data.output_data[dmu, u]
+            
+            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
+            
+            # 计算超效率值
+            numerator = 1 - input_inefficiency
+            denominator = 1 + output_inefficiency
+            
+            # 确保分母不为零
+            if denominator <= 1e-6:
+                denominator = 1e-6
+            
+            super_efficiency = numerator / denominator
             
             # 验证超效率值 >= 1（理论上应该总是成立）
             if super_efficiency < 1.0:
@@ -3547,5 +3578,94 @@ def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
     
     return rts_status, rts_suggestions
 
-# 主应用入口 - 直接调用main函数
-main()
+def test_super_sbm():
+    """测试超效率SBM模型"""
+    # 用户提供的数据
+    data = {
+        'DMU': ['DMU1', 'DMU2', 'DMU3', 'DMU4', 'DMU5', 'DMU6', 'DMU7', 'DMU8', 'DMU9', 'DMU10'],
+        'Input1_Capital': [100, 120, 90, 130, 110, 85, 95, 140, 105, 115],
+        'Input2_Labor': [50, 60, 45, 70, 55, 40, 48, 75, 52, 58],
+        'Input3_Energy': [80, 90, 70, 100, 85, 65, 75, 110, 82, 92],
+        'Output1_GDP': [120, 140, 110, 150, 130, 100, 115, 160, 125, 135],
+        'Output2_Profit': [15, 18, 14, 20, 17, 12, 16, 22, 16, 19],
+        'Output3_Employment': [45, 50, 40, 55, 48, 38, 42, 60, 46, 52],
+        'Undesired1_CO2': [20, 24, 18, 26, 22, 16, 19, 28, 21, 23],
+        'Undesired2_Waste': [30, 34, 26, 38, 32, 24, 28, 42, 30, 36]
+    }
+    
+    df = pd.DataFrame(data)
+    with open("test_output.txt", "w", encoding="utf-8") as f:
+        f.write("测试数据：\n")
+        f.write(str(df))
+        f.write("\n\n")
+    
+    # 准备数据
+    input_columns = ['Input1_Capital', 'Input2_Labor', 'Input3_Energy']
+    output_columns = ['Output1_GDP', 'Output2_Profit', 'Output3_Employment']
+    undesirable_columns = ['Undesired1_CO2', 'Undesired2_Waste']
+    
+    input_data = df[input_columns].values
+    output_data = df[output_columns + undesirable_columns].values
+    dmu_names = df['DMU'].tolist()
+    
+    # 创建DEA数据对象
+    dea_data = DEAData(
+        input_data=input_data,
+        output_data=output_data,
+        dmu_names=dmu_names,
+        input_names=input_columns,
+        output_names=output_columns + undesirable_columns
+    )
+    
+    # 创建超效率SBM模型
+    super_sbm = SuperEfficiencySBMModel(
+        data=dea_data,
+        orientation='input',
+        undesirable_outputs=[3, 4],  # Undesired1_CO2, Undesired2_Waste
+        rts='vrs',
+        handle_infeasible='set_to_1'
+    )
+    
+    with open("test_output.txt", "a", encoding="utf-8") as f:
+        f.write("开始计算超效率SBM模型...\n")
+        f.write("=" * 50 + "\n")
+    
+    try:
+        # 求解
+        result = super_sbm.solve()
+        
+        with open("test_output.txt", "a", encoding="utf-8") as f:
+            f.write("求解完成！\n")
+            
+            # 显示结果
+            f.write("\n超效率SBM结果：\n")
+            f.write("=" * 50 + "\n")
+            
+            result_df = result.to_dataframe()
+            f.write(result_df[['DMU', '效率值']].to_string(index=False))
+            f.write("\n")
+            
+            f.write("\n详细结果：\n")
+            f.write("=" * 50 + "\n")
+            for i, dmu_name in enumerate(dmu_names):
+                efficiency = result_df.iloc[i]['效率值']
+                f.write(f"{dmu_name}: {efficiency:.6f}\n")
+            
+            f.write("\n测试完成！\n")
+        
+        return result_df
+        
+    except Exception as e:
+        with open("test_output.txt", "a", encoding="utf-8") as f:
+            f.write(f"求解失败: {e}\n")
+            import traceback
+            f.write(traceback.format_exc())
+        return None
+
+# 主应用入口
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test_super_sbm()
+    else:
+        main()
