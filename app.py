@@ -714,13 +714,14 @@ class SuperEfficiencySBMModel:
                 return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
         except Exception:
             return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
+    
+    def _calculate_super_efficiency(self, dmu, other_dmus):
+        """计算超效率SBM值 - 使用正确的Charnes-Cooper变换"""
+        n_other = len(other_dmus)
+        n_inputs = self.data.n_input
+        n_outputs = self.data.n_output
 
-        def _calculate_super_efficiency(self, dmu, other_dmus):
-            n_other = len(other_dmus)
-            n_inputs = self.data.n_input
-            n_outputs = self.data.n_output
-
-            # 处理非期望产出
+        # 处理非期望产出
         if self.undesirable_outputs is not None and len(self.undesirable_outputs) > 0:
             undesirable_indices = self.undesirable_outputs
             desirable_outputs = [var for var in range(n_outputs) if var not in undesirable_indices]
