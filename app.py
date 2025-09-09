@@ -3537,5 +3537,9 @@ def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
                         rts_status[-1] += " (λ>1)"
     
     return rts_status, rts_suggestions
+
+# 主应用入口
 if __name__ == "__main__":
-    main()
+    # 由于这是Streamlit应用，main函数会在streamlit run时自动调用
+    # 这里不需要显式调用main()
+    pass
