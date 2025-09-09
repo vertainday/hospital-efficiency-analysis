@@ -447,6 +447,7 @@ class SuperEfficiencySBMModel:
         # 第一步：计算普通SBM模型，识别有效DMU
         print("第一步：计算普通SBM模型，识别有效DMU...")
         regular_sbm_scores = self._calculate_regular_sbm()
+        print(f"普通SBM效率值: {regular_sbm_scores}")
         
         # 识别有效DMU（效率值 = 1）
         efficient_dmus = [i for i in range(n_dmus) if abs(regular_sbm_scores[i] - 1.0) < 1e-6]
@@ -454,7 +455,7 @@ class SuperEfficiencySBMModel:
         print(f"有效DMU索引: {[i+1 for i in efficient_dmus]}")
         
         # 初始化结果数组
-        efficiency_scores = regular_sbm_scores.copy()  # 先复制普通SBM结果
+        efficiency_scores = np.zeros(n_dmus)  # 初始化为0，稍后填充
         slack_inputs = np.zeros((n_dmus, n_inputs))
         slack_outputs = np.zeros((n_dmus, n_outputs))
         lambda_sums = np.zeros(n_dmus)
@@ -464,6 +465,7 @@ class SuperEfficiencySBMModel:
         print("获取普通SBM松弛变量...")
         for dmu in range(n_dmus):
             if dmu not in efficient_dmus:  # 只对无效DMU获取松弛变量
+                efficiency_scores[dmu] = regular_sbm_scores[dmu]  # 无效DMU使用普通SBM结果
                 result = self._solve_sbm_two_stage(dmu, 
                                                  list(range(n_outputs)) if self.undesirable_outputs is None 
                                                  else [var for var in range(n_outputs) if var not in self.undesirable_outputs],
@@ -505,6 +507,7 @@ class SuperEfficiencySBMModel:
                 print(f"  DMU {dmu+1} 无解")
         
         # 将结果存储到DEAResult对象中
+        print(f"最终效率值: {efficiency_scores}")
         for i, dmu_name in enumerate(self.data.dmu_names):
             efficiency = efficiency_scores[i] if not np.isnan(efficiency_scores[i]) else float('inf')
             status = solution_status[i] if i < len(solution_status) else 'unknown'
@@ -868,6 +871,7 @@ class SuperEfficiencySBMModel:
                 # 非期望产出的松弛变量需要取负值
                 output_inefficiency += -slack_o[u] / self.data.output_data[dmu, u]
             
+            # 产出无效率应该除以总产出数量（期望产出 + 非期望产出）
             output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
             
             # 计算超效率值
@@ -882,9 +886,12 @@ class SuperEfficiencySBMModel:
             
             # 验证超效率值 >= 1（理论上应该总是成立）
             if super_efficiency < 1.0:
-                print(f"  警告：DMU {dmu+1} 超效率值 < 1: {super_efficiency:.5f}")
-                # 如果超效率值 < 1，说明计算有问题，将其设为1
-                super_efficiency = 1.0
+                print(f"  警告：DMU {dmu+1} 超效率值 < 1: {super_efficiency:.8f}")
+                # 如果超效率值 < 1，说明计算有问题，但不要强制设为1
+                # 保持原始计算结果，但记录警告
+                pass
+            else:
+                print(f"  DMU {dmu+1} 超效率值: {super_efficiency:.8f}")
             
             # 超效率SBM松弛变量符号规则：效率≥1时，所有松弛变量标记为负值
             # 这表示"可以恶化但仍有效"的程度
@@ -1980,6 +1987,9 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 # 提取效率值
                 efficiency_scores = np.array([result.efficiency_scores.get(dmu_name, np.nan) 
                                             for dmu_name in data.dmu_names])
+                
+                # 调试输出
+                print(f"SBM模型效率值: {efficiency_scores}")
             else:
                 # 创建DEA数据对象
                 data = DEAData(dea.input_data, dea.output_data)
@@ -1999,6 +2009,9 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 # 提取效率值
                 efficiency_scores = np.array([result.efficiency_scores.get(dmu_name, np.nan) 
                                             for dmu_name in data.dmu_names])
+                
+                # 调试输出
+                print(f"SBM模型效率值: {efficiency_scores}")
             results_dict['效率值'] = efficiency_scores
         elif model_type == 'Super-SBM':
             # 处理非期望产出
