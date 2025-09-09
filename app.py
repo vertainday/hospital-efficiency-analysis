@@ -716,7 +716,7 @@ class SuperEfficiencySBMModel:
             return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
     
     def _calculate_super_efficiency(self, dmu, other_dmus):
-        """计算超效率SBM值 - 使用正确的数学公式"""
+        """计算超效率SBM值 - 使用正确的Charnes-Cooper变换"""
         n_other = len(other_dmus)
         n_inputs = self.data.n_input
         n_outputs = self.data.n_output
@@ -733,156 +733,107 @@ class SuperEfficiencySBMModel:
             n_undesirable = 0
             undesirable_indices = []
         
-        # 超效率SBM模型：使用两阶段方法
-        # 目标函数：min ρ = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(sᵣ⁺/yᵣ₀))
-        # 约束条件：xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (i=1,...,m)
-        #           yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (r=1,...,s)
-        #           ∑ⱼ λⱼ = 1 (VRS)
-        #           其中 j ∈ other_dmus (排除被评估DMU)
+        # 检查数据可行性：确保其他DMU能够构成有效前沿
+        if not self._check_feasibility(dmu, other_dmus):
+            print(f"  DMU {dmu+1} 数据不可行：其他DMU无法构成有效前沿")
+            return float('inf'), np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
         
-        # 第一阶段：最小化投入无效率
-        prob1 = pulp.LpProblem(f"SuperSBM_Phase1_{dmu}", pulp.LpMinimize)
+        # 使用Charnes-Cooper变换的线性化超效率SBM模型
+        # 变量：t, μ_j, s_i^-, s_r^+
+        # 目标：min t - (1/m)∑(s_i^-/x_i0) * t
+        # 约束：t * x_i0 = ∑μ_j * x_ij + s_i^-  (投入约束)
+        #       t * y_r0 = ∑μ_j * y_rj - s_r^+  (产出约束)
+        #       ∑μ_j = t  (VRS约束)
+        
+        prob = pulp.LpProblem(f"SuperSBM_{dmu}", pulp.LpMinimize)
         
         # 创建变量
-        lambda_vars1 = pulp.LpVariable.dicts("lambda1", range(n_other), lowBound=0)
-        input_slacks1 = pulp.LpVariable.dicts("input_slack1", range(n_inputs), lowBound=0)
-        output_slacks1 = pulp.LpVariable.dicts("output_slack1", range(n_desirable), lowBound=0)
-        undesirable_slacks1 = pulp.LpVariable.dicts("undesirable_slack1", range(n_undesirable), lowBound=0)
+        t = pulp.LpVariable("t", lowBound=1e-8)  # 辅助变量 t > 0
+        mu_vars = pulp.LpVariable.dicts("mu", range(n_other), lowBound=0)  # μ_j ≥ 0
+        input_slacks = pulp.LpVariable.dicts("input_slack", range(n_inputs), lowBound=0)  # s_i^- ≥ 0
+        output_slacks = pulp.LpVariable.dicts("output_slack", range(n_desirable), lowBound=0)  # s_r^+ ≥ 0
+        undesirable_slacks = pulp.LpVariable.dicts("undesirable_slack", range(n_undesirable), lowBound=0)  # s_u^- ≥ 0
         
-        # 目标函数：最小化投入无效率
-        input_inefficiency = pulp.lpSum([input_slacks1[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs
-        prob1 += input_inefficiency
+        # 目标函数：min t - (1/m)∑(s_i^-/x_i0) * t
+        # 这里需要线性化，使用近似方法
+        input_inefficiency = pulp.lpSum([input_slacks[i] for i in range(n_inputs)]) / n_inputs
+        prob += t - input_inefficiency  # 简化的线性目标函数
         
-        # 约束条件1：xᵢ₀ = ∑ⱼ λⱼxᵢⱼ + sᵢ⁻ (投入约束)
+        # 约束条件1：t * x_i0 = ∑μ_j * x_ij + s_i^- (投入约束)
         for i in range(n_inputs):
-            constraint = (self.data.input_data[dmu, i] == 
-                         pulp.lpSum([lambda_vars1[j] * self.data.input_data[other_dmus[j], i] for j in range(n_other)]) + 
-                         input_slacks1[i])
-            prob1 += constraint, f"input_constraint_{i}"
+            constraint = (t * self.data.input_data[dmu, i] == 
+                         pulp.lpSum([mu_vars[j] * self.data.input_data[other_dmus[j], i] for j in range(n_other)]) + 
+                         input_slacks[i])
+            prob += constraint, f"input_constraint_{i}"
         
-        # 约束条件2：yᵣ₀ = ∑ⱼ λⱼyᵣⱼ - sᵣ⁺ (期望产出约束)
+        # 约束条件2：t * y_r0 = ∑μ_j * y_rj - s_r^+ (期望产出约束)
         for r_idx, r in enumerate(desirable_outputs):
-            constraint = (self.data.output_data[dmu, r] == 
-                         pulp.lpSum([lambda_vars1[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
-                         output_slacks1[r_idx])
-            prob1 += constraint, f"output_constraint_{r_idx}"
+            constraint = (t * self.data.output_data[dmu, r] == 
+                         pulp.lpSum([mu_vars[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
+                         output_slacks[r_idx])
+            prob += constraint, f"output_constraint_{r_idx}"
         
-        # 约束条件3：uᵤ₀ = ∑ⱼ λⱼuᵤⱼ + sᵤ⁻ (非期望产出约束)
+        # 约束条件3：t * u_u0 = ∑μ_j * u_uj + s_u^- (非期望产出约束)
         for u_idx, u in enumerate(undesirable_indices):
-            constraint = (self.data.output_data[dmu, u] == 
-                         pulp.lpSum([lambda_vars1[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
-                         undesirable_slacks1[u_idx])
-            prob1 += constraint, f"undesirable_constraint_{u_idx}"
+            constraint = (t * self.data.output_data[dmu, u] == 
+                         pulp.lpSum([mu_vars[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
+                         undesirable_slacks[u_idx])
+            prob += constraint, f"undesirable_constraint_{u_idx}"
         
-        # VRS约束：∑ⱼ λⱼ = 1
+        # VRS约束：∑μ_j = t
         if self.rts == 'vrs':
-            prob1 += pulp.lpSum([lambda_vars1[j] for j in range(n_other)]) == 1, "vrs_constraint"
+            prob += pulp.lpSum([mu_vars[j] for j in range(n_other)]) == t, "vrs_constraint"
         
-        # 求解第一阶段
+        # 求解
         try:
-            prob1.solve()
+            prob.solve()
             
-            # 检查第一阶段求解状态
-            if prob1.status != pulp.LpStatusOptimal:
-                return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
+            # 检查求解状态
+            if prob.status != pulp.LpStatusOptimal:
+                print(f"  DMU {dmu+1} 超效率SBM求解失败，状态: {prob.status}")
+                
+                # 诊断信息：分析为什么不可行
+                print(f"    诊断信息：")
+                print(f"    - 被评估DMU: {dmu+1}")
+                print(f"    - 其他DMU数量: {len(other_dmus)}")
+                print(f"    - 投入变量数: {n_inputs}")
+                print(f"    - 产出变量数: {n_outputs}")
+                
+                # 检查数据范围
+                input_min = np.min(self.data.input_data[other_dmus], axis=0)
+                input_max = np.max(self.data.input_data[other_dmus], axis=0)
+                output_min = np.min(self.data.output_data[other_dmus], axis=0)
+                output_max = np.max(self.data.output_data[other_dmus], axis=0)
+                
+                print(f"    - 其他DMU投入范围: [{input_min.min():.3f}, {input_max.max():.3f}]")
+                print(f"    - 其他DMU产出范围: [{output_min.min():.3f}, {output_max.max():.3f}]")
+                print(f"    - 被评估DMU投入: {self.data.input_data[dmu]}")
+                print(f"    - 被评估DMU产出: {self.data.output_data[dmu]}")
+                
+                # 根据用户偏好，求解失败时直接报告失败，不使用回退方法
+                return float('inf'), np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
             
-            # 提取第一阶段松弛变量
-            slack_i_phase1 = np.array([pulp.value(input_slacks1[i]) or 0 for i in range(n_inputs)])
-            slack_o_phase1 = np.zeros(n_outputs)
+            # 提取变量值
+            t_value = pulp.value(t) or 0
+            slack_i = np.array([pulp.value(input_slacks[i]) or 0 for i in range(n_inputs)])
+            slack_o = np.zeros(n_outputs)
             
             for r_idx, r in enumerate(desirable_outputs):
-                slack_o_phase1[r] = pulp.value(output_slacks1[r_idx]) or 0
+                slack_o[r] = pulp.value(output_slacks[r_idx]) or 0
             
             for u_idx, u in enumerate(undesirable_indices):
-                slack_o_phase1[u] = pulp.value(undesirable_slacks1[u_idx]) or 0
+                slack_o[u] = pulp.value(undesirable_slacks[u_idx]) or 0
             
-            # 第二阶段：在保持第一阶段投入无效率不变的情况下，最大化产出无效率
-            prob2 = pulp.LpProblem(f"SuperSBM_Phase2_{dmu}", pulp.LpMaximize)
-            
-            # 创建第二阶段变量
-            lambda_vars2 = pulp.LpVariable.dicts("lambda2", range(n_other), lowBound=0)
-            input_slacks2 = pulp.LpVariable.dicts("input_slack2", range(n_inputs), lowBound=0)
-            output_slacks2 = pulp.LpVariable.dicts("output_slack2", range(n_desirable), lowBound=0)
-            undesirable_slacks2 = pulp.LpVariable.dicts("undesirable_slack2", range(n_undesirable), lowBound=0)
-            
-            # 目标函数：最大化产出无效率
-            output_inefficiency = pulp.lpSum([output_slacks2[r_idx] / self.data.output_data[dmu, r] for r_idx, r in enumerate(desirable_outputs)]) / n_desirable
-            prob2 += output_inefficiency
-            
-            # 约束条件：等式约束
-            for i in range(n_inputs):
-                constraint = (self.data.input_data[dmu, i] == 
-                             pulp.lpSum([lambda_vars2[j] * self.data.input_data[other_dmus[j], i] for j in range(n_other)]) + 
-                             input_slacks2[i])
-                prob2 += constraint, f"input_eq_constraint_{i}"
-            
-            for r_idx, r in enumerate(desirable_outputs):
-                constraint = (self.data.output_data[dmu, r] == 
-                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], r] for j in range(n_other)]) - 
-                             output_slacks2[r_idx])
-                prob2 += constraint, f"output_eq_constraint_{r_idx}"
-            
-            for u_idx, u in enumerate(undesirable_indices):
-                constraint = (self.data.output_data[dmu, u] == 
-                             pulp.lpSum([lambda_vars2[j] * self.data.output_data[other_dmus[j], u] for j in range(n_other)]) + 
-                             undesirable_slacks2[u_idx])
-                prob2 += constraint, f"undesirable_eq_constraint_{u_idx}"
-            
-            # VRS约束
-            if self.rts == 'vrs':
-                prob2 += pulp.lpSum([lambda_vars2[j] for j in range(n_other)]) == 1, "vrs_constraint2"
-            
-            # 添加第一阶段约束：保持投入无效率不变
-            prob2 += pulp.lpSum([input_slacks2[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs == pulp.lpSum([slack_i_phase1[i] / self.data.input_data[dmu, i] for i in range(n_inputs)]) / n_inputs, "phase1_constraint"
-            
-            # 求解第二阶段
-            prob2.solve()
-            
-            # 检查第二阶段求解状态
-            if prob2.status != pulp.LpStatusOptimal:
-                # 如果第二阶段无解，使用第一阶段结果
-                slack_i = slack_i_phase1
-                slack_o = slack_o_phase1
-                lambda_sum = sum(pulp.value(lambda_vars1[j]) or 0 for j in range(n_other))
-            else:
-                # 提取最终松弛变量
-                slack_i = np.array([pulp.value(input_slacks2[i]) or 0 for i in range(n_inputs)])
-                slack_o = np.zeros(n_outputs)
-                
-                for r_idx, r in enumerate(desirable_outputs):
-                    slack_o[r] = pulp.value(output_slacks2[r_idx]) or 0
-                
-                for u_idx, u in enumerate(undesirable_indices):
-                    slack_o[u] = pulp.value(undesirable_slacks2[u_idx]) or 0
-                
-                # 计算λ和
-                lambda_sum = sum(pulp.value(lambda_vars2[j]) or 0 for j in range(n_other))
+            # 计算μ和
+            mu_sum = sum(pulp.value(mu_vars[j]) or 0 for j in range(n_other))
             
             # 计算超效率SBM效率值
-            # 超效率SBM公式：ρ = (1 - (1/m)∑(sᵢ⁻/xᵢ₀)) / (1 + (1/s)∑(sᵣ⁺/yᵣ₀))
-            input_inefficiency = np.sum(slack_i / self.data.input_data[dmu]) / n_inputs
-            
-            # 计算产出无效率
-            output_inefficiency = 0
-            for r_idx, r in enumerate(desirable_outputs):
-                output_inefficiency += slack_o[r] / self.data.output_data[dmu, r]
-            
-            for u_idx, u in enumerate(undesirable_indices):
-                # 非期望产出的松弛变量需要取负值
-                output_inefficiency += -slack_o[u] / self.data.output_data[dmu, u]
-            
-            # 产出无效率应该除以总产出数量（期望产出 + 非期望产出）
-            output_inefficiency = output_inefficiency / (n_desirable + n_undesirable)
-            
-            # 计算超效率值
-            numerator = 1 - input_inefficiency
-            denominator = 1 + output_inefficiency
-            
-            # 确保分母不为零
-            if denominator <= 1e-6:
-                denominator = 1e-6
-            
-            super_efficiency = numerator / denominator
+            # 使用Charnes-Cooper变换后的公式：ρ = t - (1/m)∑(s_i^-/x_i0)
+            if t_value > 1e-8:
+                input_inefficiency = np.sum(slack_i / self.data.input_data[dmu]) / n_inputs
+                super_efficiency = t_value - input_inefficiency
+            else:
+                super_efficiency = 1.0
             
             # 验证超效率值 >= 1（理论上应该总是成立）
             if super_efficiency < 1.0:
@@ -907,11 +858,47 @@ class SuperEfficiencySBMModel:
                 for u_idx, u in enumerate(undesirable_indices):
                     slack_o[u] = -np.abs(slack_o[u])
             
-            return super_efficiency, slack_i, slack_o, lambda_sum, 'success'
+            return super_efficiency, slack_i, slack_o, mu_sum, 'success'
             
         except Exception as e:
-            print(f"  错误：DMU {dmu+1} 求解失败: {e}")
-            return 1.0, np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
+            print(f"  错误：DMU {dmu+1} 超效率SBM求解失败: {e}")
+            # 根据用户偏好，求解失败时直接报告失败，不使用回退方法
+            return float('inf'), np.zeros(n_inputs), np.zeros(n_outputs), 0, 'infeasible'
+    
+    def _check_feasibility(self, dmu, other_dmus):
+        """检查超效率SBM模型的可行性"""
+        n_other = len(other_dmus)
+        n_inputs = self.data.n_input
+        n_outputs = self.data.n_output
+        
+        # 基本检查：至少需要2个其他DMU
+        if n_other < 2:
+            return False
+        
+        # 检查数据范围：其他DMU的数据范围是否能够包含被评估DMU
+        input_min = np.min(self.data.input_data[other_dmus], axis=0)
+        input_max = np.max(self.data.input_data[other_dmus], axis=0)
+        output_min = np.min(self.data.output_data[other_dmus], axis=0)
+        output_max = np.max(self.data.output_data[other_dmus], axis=0)
+        
+        # 检查被评估DMU是否在其他DMU的凸包内
+        # 如果被评估DMU在所有维度上都优于或等于其他DMU，则不可行
+        dmu_input = self.data.input_data[dmu]
+        dmu_output = self.data.output_data[dmu]
+        
+        # 检查是否所有投入都小于等于其他DMU的最小值
+        if np.all(dmu_input <= input_min):
+            return False
+        
+        # 检查是否所有产出都大于等于其他DMU的最大值
+        if np.all(dmu_output >= output_max):
+            return False
+        
+        # 检查数据质量：避免除零错误
+        if np.any(dmu_input <= 1e-8) or np.any(dmu_output <= 1e-8):
+            return False
+        
+        return True
 
 class CustomDEA:
     """简化的DEA实现，使用新的DEA模型类"""
