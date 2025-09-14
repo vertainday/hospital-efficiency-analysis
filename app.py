@@ -136,33 +136,41 @@ class CCRModel:
         if self.orientation == 'input':
             # 投入导向CCR约束
             for j in range(self.data.n_input):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) <= theta * self.data.input_data[dmu_idx, j]
-                prob += constraint, f"input_constraint_{j}"
+                # 修复：只有当被评估DMU的投入不为0时才添加约束
+                if self.data.input_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) <= theta * self.data.input_data[dmu_idx, j]
+                    prob += constraint, f"input_constraint_{j}"
             
             for j in range(self.data.n_output):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) >= self.data.output_data[dmu_idx, j]
-                prob += constraint, f"output_constraint_{j}"
+                # 修复：只有当被评估DMU的产出不为0时才添加约束
+                if self.data.output_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) >= self.data.output_data[dmu_idx, j]
+                    prob += constraint, f"output_constraint_{j}"
         else:
             # 产出导向CCR约束
             for j in range(self.data.n_input):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) <= self.data.input_data[dmu_idx, j]
-                prob += constraint, f"input_constraint_{j}"
+                # 修复：只有当被评估DMU的投入不为0时才添加约束
+                if self.data.input_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) <= self.data.input_data[dmu_idx, j]
+                    prob += constraint, f"input_constraint_{j}"
             
             for j in range(self.data.n_output):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) >= theta * self.data.output_data[dmu_idx, j]
-                prob += constraint, f"output_constraint_{j}"
+                # 修复：只有当被评估DMU的产出不为0时才添加约束
+                if self.data.output_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) >= theta * self.data.output_data[dmu_idx, j]
+                    prob += constraint, f"output_constraint_{j}"
         
         # 求解
         prob.solve()
@@ -231,35 +239,43 @@ class BCCModel:
         # 设置目标函数
         prob += theta
         
-        # 添加约束（与CCR相同）
+        # 添加约束（与CCR相同，但修复0值处理）
         if self.orientation == 'input':
             for j in range(self.data.n_input):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) <= theta * self.data.input_data[dmu_idx, j]
-                prob += constraint, f"input_constraint_{j}"
+                # 修复：只有当被评估DMU的投入不为0时才添加约束
+                if self.data.input_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) <= theta * self.data.input_data[dmu_idx, j]
+                    prob += constraint, f"input_constraint_{j}"
             
             for j in range(self.data.n_output):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) >= self.data.output_data[dmu_idx, j]
-                prob += constraint, f"output_constraint_{j}"
+                # 修复：只有当被评估DMU的产出不为0时才添加约束
+                if self.data.output_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) >= self.data.output_data[dmu_idx, j]
+                    prob += constraint, f"output_constraint_{j}"
         else:
             for j in range(self.data.n_input):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) <= self.data.input_data[dmu_idx, j]
-                prob += constraint, f"input_constraint_{j}"
+                # 修复：只有当被评估DMU的投入不为0时才添加约束
+                if self.data.input_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.input_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) <= self.data.input_data[dmu_idx, j]
+                    prob += constraint, f"input_constraint_{j}"
             
             for j in range(self.data.n_output):
-                constraint = pulp.lpSum([
-                    lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
-                    for k in range(self.data.n_dmu)
-                ]) >= theta * self.data.output_data[dmu_idx, j]
-                prob += constraint, f"output_constraint_{j}"
+                # 修复：只有当被评估DMU的产出不为0时才添加约束
+                if self.data.output_data[dmu_idx, j] > 0:
+                    constraint = pulp.lpSum([
+                        lambda_vars[self.data.dmu_names[k]] * self.data.output_data[k, j]
+                        for k in range(self.data.n_dmu)
+                    ]) >= theta * self.data.output_data[dmu_idx, j]
+                    prob += constraint, f"output_constraint_{j}"
         
         # BCC模型特有：VRS约束
         vrs_constraint = pulp.lpSum([lambda_vars[dmu] for dmu in self.data.dmu_names]) == 1
@@ -445,9 +461,9 @@ class CustomDEA:
         if np.any(self.output_data < 0):
             raise ValueError("所有产出变量不能为负数")
         
-        # 将0替换为极小正值，避免除零错误
-        self.input_data = np.maximum(self.input_data, 1e-10)
-        self.output_data = np.maximum(self.output_data, 1e-10)
+        # 修复：不要将0值替换为极小值，保持原始数据的真实性
+        # 只有在真正需要避免除零错误时才进行替换（在具体计算中处理）
+        # 这样可以保持DEA模型的约束条件有效性
         
         # 存储松弛变量结果
         self.slack_inputs = None
@@ -490,44 +506,6 @@ class CustomDEA:
         
         return efficiency_scores
     
-    def super_sbm_old(self, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
-        """超效率SBM模型 - 使用新的分步处理逻辑"""
-        # 创建DEA数据对象
-        data = DEAData(self.input_data, self.output_data)
-        
-        # 创建超效率SBM模型（使用新的实现）
-        super_sbm_model = SBMModel(
-            data, 
-            orientation='input'
-        )
-        
-        # 求解
-        result = super_sbm_model.solve()
-        
-        # 提取效率值
-        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
-                                    for i in range(self.n_dmus)])
-        
-        # 提取松弛变量和lambda值
-        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
-        
-        for i in range(self.n_dmus):
-            dmu_name = f"DMU_{i+1}"
-            if dmu_name in result.input_slacks:
-                for j, input_name in enumerate(data.input_names):
-                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
-            
-            if dmu_name in result.output_slacks:
-                for j, output_name in enumerate(data.output_names):
-                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
-            
-            if dmu_name in result.lambda_variables:
-                for j, other_dmu in enumerate(data.dmu_names):
-                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
-        
-        return efficiency_scores
     
     def ccr_output_oriented(self, method='highs'):
         """CCR模型 - 输出导向"""
@@ -673,41 +651,6 @@ class CustomDEA:
         
         return efficiency_scores
     
-    def super_sbm_old(self, undesirable_outputs=None, method='highs'):
-        """超效率SBM模型"""
-        # 创建DEA数据对象
-        data = DEAData(self.input_data, self.output_data)
-        
-        # 创建超效率SBM模型
-        super_sbm_model = SBMModel(data, orientation='input')
-        
-        # 求解
-        result = super_sbm_model.solve()
-        
-        # 提取效率值
-        efficiency_scores = np.array([result.efficiency_scores.get(f"DMU_{i+1}", np.nan) 
-                                    for i in range(self.n_dmus)])
-        
-        # 提取松弛变量和lambda值
-        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
-        
-        for i in range(self.n_dmus):
-            dmu_name = f"DMU_{i+1}"
-            if dmu_name in result.input_slacks:
-                for j, input_name in enumerate(data.input_names):
-                    self.slack_inputs[i, j] = result.input_slacks[dmu_name].get(input_name, 0)
-            
-            if dmu_name in result.output_slacks:
-                for j, output_name in enumerate(data.output_names):
-                    self.slack_outputs[i, j] = result.output_slacks[dmu_name].get(output_name, 0)
-            
-            if dmu_name in result.lambda_variables:
-                for j, other_dmu in enumerate(data.dmu_names):
-                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
-        
-        return efficiency_scores
 
 class DEAWrapper:
     """DEA分析包装器，使用新的DEA模型实现"""
@@ -772,45 +715,6 @@ class DEAWrapper:
         """SBM模型 - 包含非期望产出的松弛基础模型"""
         return self.dea.sbm(undesirable_outputs=undesirable_outputs)
     
-    def super_sbm(self, undesirable_outputs=None, rts='vrs', handle_infeasible='set_to_1'):
-        """超效率SBM模型 - 允许效率值大于1，包含规模报酬分析"""
-        # 创建DEA数据对象
-        data = DEAData(self.input_data, self.output_data)
-        
-        # 创建超效率SBM模型
-        super_sbm_model = SBMModel(
-            data, 
-            orientation='input'
-        )
-        
-        # 求解
-        result = super_sbm_model.solve()
-        
-        # 提取效率值
-        efficiency_scores = np.array([result.efficiency_scores.get(dmu_name, np.nan) 
-                                    for dmu_name in data.dmu_names])
-        
-        # 提取松弛变量和lambda值
-        self.slack_inputs = np.zeros((self.n_dmus, self.n_inputs))
-        self.slack_outputs = np.zeros((self.n_dmus, self.n_outputs))
-        self.lambda_values = np.zeros((self.n_dmus, self.n_dmus))
-        
-        for i, dmu_name in enumerate(data.dmu_names):
-            if dmu_name in result.input_slacks:
-                for j, input_name in enumerate(data.input_names):
-                    slack_value = result.input_slacks[dmu_name].get(input_name, 0)
-                    self.slack_inputs[i, j] = slack_value
-            
-            if dmu_name in result.output_slacks:
-                for j, output_name in enumerate(data.output_names):
-                    slack_value = result.output_slacks[dmu_name].get(output_name, 0)
-                    self.slack_outputs[i, j] = slack_value
-            
-            if dmu_name in result.lambda_variables:
-                for j, other_dmu in enumerate(data.dmu_names):
-                    self.lambda_values[i, j] = result.lambda_variables[dmu_name].get(other_dmu, 0)
-        
-        return efficiency_scores
     
     def efficiency(self):
         """默认效率计算方法"""
@@ -1445,23 +1349,21 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
             'DMU': dmu_names,
         }
 
-        # 根据模型类型决定是否计算CCR和BCC
-        if model_type not in ['Super-SBM']:
-            # 统一计算 CCR 和 BCC（非超效率SBM模型）
-            if orientation == 'input':
-                ccr_scores = dea.ccr_input_oriented()
-                bcc_scores = dea.bcc_input_oriented()
-            else:
-                ccr_scores = dea.ccr_output_oriented()
-                bcc_scores = dea.bcc_output_oriented()
+        # 统一计算 CCR 和 BCC
+        if orientation == 'input':
+            ccr_scores = dea.ccr_input_oriented()
+            bcc_scores = dea.bcc_input_oriented()
+        else:
+            ccr_scores = dea.ccr_output_oriented()
+            bcc_scores = dea.bcc_output_oriented()
 
-            scale_efficiency = np.divide(ccr_scores, bcc_scores, out=np.zeros_like(ccr_scores), where=bcc_scores!=0)
-            scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
+        scale_efficiency = np.divide(ccr_scores, bcc_scores, out=np.zeros_like(ccr_scores), where=bcc_scores!=0)
+        scale_efficiency = np.clip(scale_efficiency, 0.0, 1.0)
 
-            # 存储所有效率指标
-            results_dict['综合效率(TE)'] = ccr_scores
-            results_dict['纯技术效率(PTE)'] = bcc_scores
-            results_dict['规模效率(SE)'] = scale_efficiency
+        # 存储所有效率指标
+        results_dict['综合效率(TE)'] = ccr_scores
+        results_dict['纯技术效率(PTE)'] = bcc_scores
+        results_dict['规模效率(SE)'] = scale_efficiency
 
         # 根据选择的 model_type 设置主效率值
         if model_type == 'CCR':
@@ -1480,7 +1382,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 # 创建DEA数据对象
                 data = DEAData(dea.input_data, dea.output_data)
                 
-                # 创建超效率SBM模型（只计算普通SBM部分）
+                # 创建SBM模型
                 sbm_model = SBMModel(
                     data, 
                     orientation='input'
@@ -1499,7 +1401,7 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
                 # 创建DEA数据对象
                 data = DEAData(dea.input_data, dea.output_data)
                 
-                # 创建超效率SBM模型（只计算普通SBM部分）
+                # 创建SBM模型
                 sbm_model = SBMModel(
                     data, 
                     orientation='input'
@@ -1792,24 +1694,6 @@ def display_dea_formulas():
     \lambda \geq 0, \quad s^- \geq 0, \quad s^+ \geq 0
     """)
     
-    # 超效率SBM模型公式
-    st.markdown("### 4. 超效率SBM模型")
-    
-    st.latex(r"""
-    \min \delta = \frac{1 + \frac{1}{m}\sum_{i=1}^{m}\frac{s_i^-}{x_{i0}}}{1 - \frac{1}{s}\sum_{r=1}^{s}\frac{s_r^+}{y_{r0}}}
-    """)
-    st.latex(r"""
-    \text{s.t. } x_0 = X\lambda + s^-
-    """)
-    st.latex(r"""
-    y_0 = Y\lambda - s^+
-    """)
-    st.latex(r"""
-    \lambda \geq 0, \quad s^- \geq 0, \quad s^+ \geq 0
-    """)
-    st.latex(r"""
-    \text{（排除被评估的DMU）}
-    """)
     
     # 符号说明
     st.markdown("### 符号说明")
@@ -1817,7 +1701,6 @@ def display_dea_formulas():
     - **θ**: 效率值（输入导向）
     - **φ**: 效率值（输出导向）
     - **ρ**: SBM效率值
-    - **δ**: 超效率SBM效率值
     - **λⱼ**: 权重变量
     - **s⁻**: 投入松弛变量（投入冗余）
     - **s⁺**: 产出松弛变量（产出不足）
@@ -2145,10 +2028,6 @@ def main():
                         "value": "SBM",
                         "description": "适用于含非期望产出场景，非径向效率测量"
                     },
-                    # "超效率SBM模型": {
-                    #     "value": "Super-SBM",
-                    #     "description": "超效率SBM模型，允许效率值大于1，可对有效DMU进一步排序"
-                    # }
                 }
                 
                 selected_model = st.selectbox(
@@ -2216,32 +2095,8 @@ def main():
                         st.info("当前没有可用的变量作为非期望产出。")
                         undesirable_outputs = []
                 
-                # 规模报酬选择（超效率SBM模型已移除）
+                # 规模报酬选择
                 rts = 'vrs'  # 默认值
-                # if model_info['value'] == 'Super-SBM':
-                #     st.markdown("**规模报酬假设选择**")
-                #     st.caption("选择规模报酬假设，影响效率值计算和规模报酬分析")
-                #     
-                #     rts_options = {
-                #         "规模报酬可变(VRS)": {
-                #             "value": "vrs"
-                #         },
-                #         "规模报酬不变(CRS)": {
-                #             "value": "crs"
-                #         }
-                #     }
-                #     
-                #     selected_rts = st.selectbox(
-                #         "选择规模报酬假设",
-                #         options=list(rts_options.keys()),
-                #         index=0,  # 默认选择VRS
-                #     )
-                #     
-                #     rts_info = rts_options[selected_rts]
-                #     rts = rts_info['value']
-                # else:
-                #     # 非超效率SBM模型，使用默认的VRS
-                #     rts = 'vrs'
                 
                 # 为SBM模型添加无解处理选项（超效率SBM模型已移除）
                 if model_info['value'] in ['SBM']:
@@ -2356,10 +2211,6 @@ def main():
                     # 显示结果
                     st.subheader("效率分析结果")
 
-                    # 检查是否为超效率SBM模型（已移除）
-                    # if st.session_state.get('dea_model') == 'Super-SBM':
-                    #     # 超效率SBM模型的专门结果展示
-                    #     st.markdown("**超效率SBM分析结果（按效率值降序排列）**")
                     #     
                     #     # 使用results中的规模报酬信息
                     #     results_display = results.copy()
@@ -2405,8 +2256,8 @@ def main():
                     )
                     st.markdown('</div>', unsafe_allow_html=True)
                     
-                    # 超效率SBM模型的详细分析结果
-                    st.subheader("超效率SBM详细分析结果")
+                    # 详细分析结果
+                    st.subheader("详细分析结果")
                     
                     # 投影目标值分析
                     projection_cols = [col for col in results.columns if '投影目标值' in col]
@@ -2446,10 +2297,6 @@ def main():
                             - **期望产出松弛变量 > 0**：该产出需增加对应数值以达到效率前沿
                             - **非期望产出松弛变量 > 0**：该非期望产出需减少对应数值以达到效率前沿
                             
-                            **情况B：效率 ≥ 1（超效率SBM结果）**
-                            - **投入松弛变量 < 0**：投入可增加|松弛变量|单位，仍保持有效（表示超效率程度）
-                            - **期望产出松弛变量 < 0**：产出可减少|松弛变量|单位，仍保持有效（表示超效率程度）
-                            - **非期望产出松弛变量 < 0**：非期望产出可增加|松弛变量|单位，仍保持有效（表示超效率程度）
                             
                             **松弛变量为0**：表示该变量已达到最优水平
                             """)
@@ -2480,8 +2327,8 @@ def main():
                                 if infeasible_count / len(results) > 0.2:
                                     st.warning("警告：无解DMU比例较高（>20%），建议考虑更换模型或假设")
                         
-                        # 超效率SBM模型的统计信息
-                        st.markdown("**📈 超效率SBM统计信息**")
+                        # 统计信息
+                        st.markdown("**📈 统计信息**")
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
@@ -2501,23 +2348,7 @@ def main():
                         st.write(efficiency_stats)
                         
                         # 超效率SBM模型效率值解释
-                        st.markdown("**超效率SBM模型效率值解释**")
-                        st.markdown("""
-                        | 效率值范围 | 含义 | 解读 |
-                        |-----------|------|------|
-                        | **效率值 = 1** | 技术有效 | 位于效率前沿面上，达到最优状态 |
-                        | **效率值 < 1** | 技术无效 | 存在改进空间，需要优化投入产出组合 |
-                        | **效率值 > 1** | 超效率 | 超越效率前沿，表现优异，可作为标杆 |
-                        """)
-                        
-                        st.markdown("""
-                        **超效率SBM模型特点**：
-                        - 允许效率值大于1，可对有效DMU进行进一步排序
-                        - 处理非期望产出（如CO₂排放）
-                        - 提供更精确的效率评估
-                        - 效率值范围：(0,∞)
-                        """)
-                    # 检查结果中是否包含三种效率值（非超效率SBM模型）
+                    # 检查结果中是否包含三种效率值
                     elif '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
                         # 如果包含三种效率值，显示完整的效率分解结果
                         st.markdown("**效率值排名（按综合效率降序排列）**")
@@ -3093,89 +2924,8 @@ def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
     
     return rts_status, rts_suggestions
 
-# def test_super_sbm():
-#     """测试超效率SBM模型（已移除）"""
-#     # 用户提供的数据
-#     data = {
-#         'DMU': ['DMU1', 'DMU2', 'DMU3', 'DMU4', 'DMU5', 'DMU6', 'DMU7', 'DMU8', 'DMU9', 'DMU10'],
-#         'Input1_Capital': [100, 120, 90, 130, 110, 85, 95, 140, 105, 115],
-#         'Input2_Labor': [50, 60, 45, 70, 55, 40, 48, 75, 52, 58],
-#         'Input3_Energy': [80, 90, 70, 100, 85, 65, 75, 110, 82, 92],
-#         'Output1_GDP': [120, 140, 110, 150, 130, 100, 115, 160, 125, 135],
-#         'Output2_Profit': [15, 18, 14, 20, 17, 12, 16, 22, 16, 19],
-#         'Output3_Employment': [45, 50, 40, 55, 48, 38, 42, 60, 46, 52],
-#         'Undesired1_CO2': [20, 24, 18, 26, 22, 16, 19, 28, 21, 23],
-#         'Undesired2_Waste': [30, 34, 26, 38, 32, 24, 28, 42, 30, 36]
-#     }
-    
-    df = pd.DataFrame(data)
-    with open("test_output.txt", "w", encoding="utf-8") as f:
-        f.write("测试数据：\n")
-        f.write(str(df))
-        f.write("\n\n")
-    
-    # 准备数据
-    input_columns = ['Input1_Capital', 'Input2_Labor', 'Input3_Energy']
-    output_columns = ['Output1_GDP', 'Output2_Profit', 'Output3_Employment']
-    undesirable_columns = ['Undesired1_CO2', 'Undesired2_Waste']
-    
-    input_data = df[input_columns].values
-    output_data = df[output_columns + undesirable_columns].values
-    dmu_names = df['DMU'].tolist()
-    
-    # 创建DEA数据对象
-    dea_data = DEAData(
-        input_data=input_data,
-        output_data=output_data,
-        dmu_names=dmu_names,
-        input_names=input_columns,
-        output_names=output_columns + undesirable_columns
-    )
-    
-    # 创建超效率SBM模型
-    super_sbm = SBMModel(
-        data=dea_data,
-        orientation='input'
-    )
-    
-    with open("test_output.txt", "a", encoding="utf-8") as f:
-        f.write("开始计算超效率SBM模型...\n")
-        f.write("=" * 50 + "\n")
-    
-    try:
-        # 求解
-        result = super_sbm.solve()
-        
-        with open("test_output.txt", "a", encoding="utf-8") as f:
-            f.write("求解完成！\n")
-            
-            # 显示结果
-            f.write("\n超效率SBM结果：\n")
-            f.write("=" * 50 + "\n")
-            
-            result_df = result.to_dataframe()
-            f.write(result_df[['DMU', '效率值']].to_string(index=False))
-            f.write("\n")
-            
-            f.write("\n详细结果：\n")
-            f.write("=" * 50 + "\n")
-            for i, dmu_name in enumerate(dmu_names):
-                efficiency = result_df.iloc[i]['效率值']
-                f.write(f"{dmu_name}: {efficiency:.6f}\n")
-            
-            f.write("\n测试完成！\n")
-        
-        return result_df
-        
-    except Exception as e:
-        with open("test_output.txt", "a", encoding="utf-8") as f:
-            f.write(f"求解失败: {e}\n")
-            import traceback
-            f.write(traceback.format_exc())
-        return None
 
 # 主应用入口
 if __name__ == "__main__":
     import sys
-    # 超效率SBM模型测试已移除
     main()
