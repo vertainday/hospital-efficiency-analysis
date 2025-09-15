@@ -1500,8 +1500,17 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         # 转为DataFrame
         results_df = pd.DataFrame(results_dict)
         
-        # 按效率值降序排列，NaN值放在最后
-        results_df = results_df.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
+        # 添加DMU数字排序键，用于正确的数字排序
+        def extract_dmu_number(dmu_name):
+            """从DMU名称中提取数字用于排序"""
+            import re
+            match = re.search(r'DMU(\d+)', str(dmu_name))
+            return int(match.group(1)) if match else 999
+        
+        results_df['_DMU_SORT'] = results_df['DMU'].apply(extract_dmu_number)
+        
+        # 按DMU数字顺序排序，然后按效率值降序排序
+        results_df = results_df.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
         
         return results_df
 
@@ -2218,11 +2227,6 @@ def main():
                     # 使用results中的规模报酬信息
                     results_display = results.copy()
                     
-                    # 按效率值降序排序，NaN值放在最后
-                    results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                    results_display = format_efficiency_values(results_display, '效率值')
-                    results_display['排名'] = list(range(1, len(results_display) + 1))
-                    
                     # 添加DMU数字排序键，用于正确的数字排序
                     def extract_dmu_number(dmu_name):
                         """从DMU名称中提取数字用于排序"""
@@ -2231,6 +2235,11 @@ def main():
                         return int(match.group(1)) if match else 999
                     
                     results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
+                    
+                    # 按DMU数字顺序排序，然后按效率值降序排序
+                    results_display = results_display.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
+                    results_display = format_efficiency_values(results_display, '效率值')
+                    results_display['排名'] = list(range(1, len(results_display) + 1))
                     
                     # 只显示四列：DMU、效率值、规模报酬、规模调整建议
                     display_cols = ['排名', 'DMU', '效率值']
@@ -2241,8 +2250,8 @@ def main():
                     if '规模调整建议' in results_display.columns:
                         display_cols.append('规模调整建议')
                     
-                    # 重新排列列顺序，包含排序键但不显示
-                    display_cols = ['排名', 'DMU', '_DMU_SORT', '效率值']
+                    # 重新排列列顺序，不显示排序键
+                    display_cols = ['排名', 'DMU', '效率值']
                     if '规模报酬(RTS)' in results_display.columns:
                         display_cols.append('规模报酬(RTS)')
                     if '规模调整建议' in results_display.columns:
@@ -2268,120 +2277,14 @@ def main():
                         results_display,
                         use_container_width=True,
                         hide_index=True,
-                        column_config={
-                            "_DMU_SORT": st.column_config.NumberColumn(
-                                "_DMU_SORT",
-                                help="DMU排序键",
-                                disabled=True,
-                                width="small"
-                            )
-                        }
+                        column_config={}
                     )
                     st.markdown('</div>', unsafe_allow_html=True)
                     
-                    # 详细分析结果
-                    st.subheader("详细分析结果")
-                    
-                    # 投影目标值分析
-                    projection_cols = [col for col in results.columns if '投影目标值' in col]
-                    if projection_cols:
-                        st.markdown("**投影目标值分析**")
-                        st.markdown("投影目标值表示各DMU在效率前沿上的目标位置：")
-                        
-                        projection_display = results[['DMU', '效率值'] + projection_cols].copy()
-                        projection_display = projection_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                        projection_display= format_efficiency_values(projection_display, '效率值')
-                        
-                        st.dataframe(projection_display, use_container_width=True, hide_index=True)
-                        
-                        st.markdown("""
-                        **投影目标值说明**：
-                        - **投入投影目标值** = 原始投入值 - 投入松弛变量
-                        - **产出投影目标值** = 原始产出值 + 产出松弛变量
-                        - 投影目标值表示达到效率前沿所需的最优投入产出组合
-                        """)
-                        
-                        # 松弛变量详细分析
-                        slack_cols = [col for col in results.columns if 'slacks' in col]
-                        if slack_cols:
-                            st.markdown("**松弛变量详细分析**")
-                            
-                            slack_display = results[['DMU', '效率值'] + slack_cols].copy()
-                            slack_display = slack_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            slack_display= format_efficiency_values(slack_display, '效率值')
-                            
-                            st.dataframe(slack_display, use_container_width=True, hide_index=True)
-                            
-                            st.markdown("""
-                            **松弛变量符号含义说明**：
-                            
-                            **情况A：效率 < 1（普通SBM结果）**
-                            - **投入松弛变量 > 0**：该投入需减少对应数值以达到效率前沿
-                            - **期望产出松弛变量 > 0**：该产出需增加对应数值以达到效率前沿
-                            - **非期望产出松弛变量 > 0**：该非期望产出需减少对应数值以达到效率前沿
-                            
-                            
-                            **松弛变量为0**：表示该变量已达到最优水平
-                            """)
-                        
-                        # 规模报酬分析
-                        if '规模报酬(RTS)' in results.columns and '规模调整建议' in results.columns:
-                            st.markdown("** 规模报酬分析**")
-                            
-                            rts_display = results[['DMU', '效率值', '规模报酬(RTS)', '规模调整建议']].copy()
-                            rts_display = rts_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                            rts_display= format_efficiency_values(rts_display, '效率值')
-                            
-                            st.dataframe(rts_display, use_container_width=True, hide_index=True)
-                            
-                            st.markdown("""
-                            - **规模报酬不变(CRS)**：当前规模最优，建议保持
-                            - **规模报酬递增(IRS)**：扩大规模可提高效率，建议扩大规模
-                            - **规模报酬递减(DRS)**：缩小规模可提高效率，建议缩小规模
-                            """)
-                        
-                        # 求解状态统计
-                        if '求解状态' in results.columns:
-                            infeasible_count = results['求解状态'].str.contains('infeasible').sum()
-                            st.markdown(f"**⚠️ 求解状态统计**: 共有 {infeasible_count} 个DMU无解")
-                            
-                            if infeasible_count > 0:
-                                st.warning(f"注意：有 {infeasible_count} 个DMU无解，已按选择的方式处理")
-                                if infeasible_count / len(results) > 0.2:
-                                    st.warning("警告：无解DMU比例较高（>20%），建议考虑更换模型或假设")
-                        
-                        # 统计信息
-                        st.markdown("**📈 统计信息**")
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.metric("分析医院数", len(results))
-                        
-                        with col2:
-                            efficient_count = len(results[results['效率值'] >= 0.9999])
-                            st.metric("有效医院数", efficient_count)
-                        
-                        with col3:
-                            avg_efficiency = results['效率值'].mean()
-                            st.metric("平均效率值", f"{avg_efficiency:.3f}")
-                        
-                        # 效率值分布统计
-                        st.markdown("**效率值分布统计**")
-                        efficiency_stats = results['效率值'].describe()
-                        st.write(efficiency_stats)
-                        
-                        # 超效率SBM模型效率值解释
                     # 检查结果中是否包含三种效率值
-                    elif '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
+                    if '综合效率(TE)' in results.columns and '纯技术效率(PTE)' in results.columns and '规模效率(SE)' in results.columns:
                         # 如果包含三种效率值，显示完整的效率分解结果
                         st.markdown("**效率值排名（按综合效率降序排列）**")
-                        
-                        # 按综合效率降序排序
-                        results_display = results.sort_values('综合效率(TE)', ascending=False).reset_index(drop=True)
-                        
-                        # 格式化效率值
-                        results_display = format_efficiency_values(results_display, ['综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)'])
-                        results_display['排名'] = list(range(1, len(results_display) + 1))
                         
                         # 添加DMU数字排序键，用于正确的数字排序
                         def extract_dmu_number(dmu_name):
@@ -2390,10 +2293,18 @@ def main():
                             match = re.search(r'DMU(\d+)', str(dmu_name))
                             return int(match.group(1)) if match else 999
                         
+                        results_display = results.copy()
                         results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                         
-                        # 重新排列列顺序，包含排序键但不显示
-                        results_display = results_display[['排名', 'DMU', '_DMU_SORT', '综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)']]
+                        # 按DMU数字顺序排序，然后按综合效率降序排序
+                        results_display = results_display.sort_values(['_DMU_SORT', '综合效率(TE)'], ascending=[True, False]).reset_index(drop=True)
+                        
+                        # 格式化效率值
+                        results_display = format_efficiency_values(results_display, ['综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)'])
+                        results_display['排名'] = list(range(1, len(results_display) + 1))
+                        
+                        # 重新排列列顺序，不显示排序键
+                        results_display = results_display[['排名', 'DMU', '综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)']]
                         
                         # 应用蓝色渐变背景样式
                         st.markdown("""
@@ -2413,14 +2324,7 @@ def main():
                             results_display,
                             use_container_width=True,
                             hide_index=True,
-                            column_config={
-                                "_DMU_SORT": st.column_config.NumberColumn(
-                                    "_DMU_SORT",
-                                    help="DMU排序键",
-                                    disabled=True,
-                                    width="small"
-                                )
-                            }
+                            column_config={}
                         )
                         st.markdown('</div>', unsafe_allow_html=True)
                         
@@ -2439,12 +2343,6 @@ def main():
                             st.error(f"结果数据复制失败: {e}")
                             results_display = results
                         
-                        # 按效率值降序排序
-                        results_display = results_display.sort_values('效率值', ascending=False, na_position='last').reset_index(drop=True)
-                        results_display = format_efficiency_values(results_display, '效率值')
-                        efficiency_col = '效率值'
-                        results_display['排名'] = list(range(1, len(results_display) + 1))
-                        
                         # 添加DMU数字排序键，用于正确的数字排序
                         def extract_dmu_number(dmu_name):
                             """从DMU名称中提取数字用于排序"""
@@ -2454,8 +2352,14 @@ def main():
                         
                         results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                         
+                        # 按DMU数字顺序排序，然后按效率值降序排序
+                        results_display = results_display.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
+                        results_display = format_efficiency_values(results_display, '效率值')
+                        efficiency_col = '效率值'
+                        results_display['排名'] = list(range(1, len(results_display) + 1))
+                        
                         # 只显示四列：DMU、效率值、规模报酬、规模调整建议
-                        display_cols = ['排名', 'DMU', '_DMU_SORT', efficiency_col]
+                        display_cols = ['排名', 'DMU', efficiency_col]
                         
                         # 添加规模报酬相关列（如果存在）
                         if '规模报酬(RTS)' in results_display.columns:
@@ -2896,62 +2800,6 @@ def main():
             st.info("请先完成DEA效率分析")
     
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭fsQCA分析区容器
-
-
-def calculate_sbm_rts(crs_scores, vrs_scores, lambda_sums):
-
-    """
-    计算SBM模型的规模报酬状态
-    
-    参数:
-    - crs_scores: CR-SBM效率值
-    - vrs_scores: VR-SBM效率值  
-    - lambda_sums: λ和数组
-    
-    返回:
-    - rts_status: 规模报酬状态数组
-    - rts_suggestions: 规模调整建议数组
-    """
-    n_dmus = len(crs_scores)
-    rts_status = []
-    rts_suggestions = []
-    
-    for i in range(n_dmus):
-        if np.isnan(crs_scores[i]) or np.isnan(vrs_scores[i]):
-            rts_status.append("求解失败")
-            rts_suggestions.append("无法判定")
-        else:
-            # 方法1：比较CR-SBM和VR-SBM效率值
-            if abs(crs_scores[i] - vrs_scores[i]) < 1e-6:
-                # ρ_CRS = ρ_VRS，规模报酬不变
-                rts_status.append("规模报酬不变(CRS)")
-                rts_suggestions.append("保持当前规模")
-            elif crs_scores[i] < vrs_scores[i]:
-                # ρ_CRS < ρ_VRS，规模报酬递减
-                rts_status.append("规模报酬递减(DRS)")
-                rts_suggestions.append("建议缩小规模")
-            else:
-                # ρ_CRS > ρ_VRS，规模报酬递增
-                rts_status.append("规模报酬递增(IRS)")
-                rts_suggestions.append("建议扩大规模")
-            
-            # 方法2：基于λ和的Banker判据（补充验证）
-            if not np.isnan(lambda_sums[i]):
-                if abs(lambda_sums[i] - 1.0) < 1e-6:
-                    # ∑λ = 1，规模报酬不变
-                    if "CRS" not in rts_status[-1]:
-                        rts_status[-1] += " (λ=1)"
-                elif lambda_sums[i] < 1.0:
-                    # ∑λ < 1，规模报酬递增
-                    if "IRS" not in rts_status[-1]:
-                        rts_status[-1] += " (λ<1)"
-                else:
-                    # ∑λ > 1，规模报酬递减
-                    if "DRS" not in rts_status[-1]:
-                        rts_status[-1] += " (λ>1)"
-    
-    return rts_status, rts_suggestions
-
 
 # 主应用入口
 if __name__ == "__main__":
