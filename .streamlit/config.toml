@@ -1,11 +1,13 @@
 [general]
-main_script_path = "streamlit_app.py"
+main_script_path = "app.py"
 
 [server]
 port = 8501
 headless = true
 enableCORS = false
 enableXsrfProtection = false
+fileWatcherType = "none"
+runOnSave = false
 
 [browser]
 gatherUsageStats = false
