@@ -13,6 +13,12 @@ import os
 import pulp
 from typing import Dict, List, Tuple, Optional, Union
 
+try:
+    from qca_analysis import perform_necessity_analysis, perform_minimization
+    QCA_AVAILABLE = True
+except ImportError:
+    QCA_AVAILABLE = False
+
 class DEAData:
     """DEA数据管理类"""
     
