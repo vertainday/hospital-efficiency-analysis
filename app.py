@@ -1509,8 +1509,8 @@ def perform_dea_analysis(data, input_vars, output_vars, model_type, orientation=
         
         results_df['_DMU_SORT'] = results_df['DMU'].apply(extract_dmu_number)
         
-        # 按DMU数字顺序排序，然后按效率值降序排序
-        results_df = results_df.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
+        # 先按效率值降序排序，然后按DMU数字顺序排序
+        results_df = results_df.sort_values(['效率值', '_DMU_SORT'], ascending=[False, True], na_position='last').reset_index(drop=True)
         
         return results_df
 
@@ -2236,8 +2236,8 @@ def main():
                     
                     results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                     
-                    # 按DMU数字顺序排序，然后按效率值降序排序
-                    results_display = results_display.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
+                    # 先按效率值降序排序，然后按DMU数字顺序排序
+                    results_display = results_display.sort_values(['效率值', '_DMU_SORT'], ascending=[False, True], na_position='last').reset_index(drop=True)
                     results_display = format_efficiency_values(results_display, '效率值')
                     results_display['排名'] = list(range(1, len(results_display) + 1))
                     
@@ -2296,8 +2296,8 @@ def main():
                         results_display = results.copy()
                         results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                         
-                        # 按DMU数字顺序排序，然后按综合效率降序排序
-                        results_display = results_display.sort_values(['_DMU_SORT', '综合效率(TE)'], ascending=[True, False]).reset_index(drop=True)
+                        # 先按综合效率降序排序，然后按DMU数字顺序排序
+                        results_display = results_display.sort_values(['综合效率(TE)', '_DMU_SORT'], ascending=[False, True]).reset_index(drop=True)
                         
                         # 格式化效率值
                         results_display = format_efficiency_values(results_display, ['综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)'])
@@ -2352,8 +2352,8 @@ def main():
                         
                         results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                         
-                        # 按DMU数字顺序排序，然后按效率值降序排序
-                        results_display = results_display.sort_values(['_DMU_SORT', '效率值'], ascending=[True, False], na_position='last').reset_index(drop=True)
+                        # 先按效率值降序排序，然后按DMU数字顺序排序
+                        results_display = results_display.sort_values(['效率值', '_DMU_SORT'], ascending=[False, True], na_position='last').reset_index(drop=True)
                         results_display = format_efficiency_values(results_display, '效率值')
                         efficiency_col = '效率值'
                         results_display['排名'] = list(range(1, len(results_display) + 1))
