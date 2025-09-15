@@ -2223,6 +2223,15 @@ def main():
                     results_display = format_efficiency_values(results_display, '效率值')
                     results_display['排名'] = list(range(1, len(results_display) + 1))
                     
+                    # 添加DMU数字排序键，用于正确的数字排序
+                    def extract_dmu_number(dmu_name):
+                        """从DMU名称中提取数字用于排序"""
+                        import re
+                        match = re.search(r'DMU(\d+)', str(dmu_name))
+                        return int(match.group(1)) if match else 999
+                    
+                    results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
+                    
                     # 只显示四列：DMU、效率值、规模报酬、规模调整建议
                     display_cols = ['排名', 'DMU', '效率值']
                     
@@ -2232,16 +2241,7 @@ def main():
                     if '规模调整建议' in results_display.columns:
                         display_cols.append('规模调整建议')
                     
-                    # 添加隐藏的DMU排序列，用于正确的数字排序
-                    def extract_dmu_number(dmu_name):
-                        """从DMU名称中提取数字用于排序"""
-                        import re
-                        match = re.search(r'DMU(\d+)', str(dmu_name))
-                        return int(match.group(1)) if match else 999
-                    
-                    results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
-                    
-                    # 重新排列列顺序，包含隐藏的排序列
+                    # 重新排列列顺序，包含排序键但不显示
                     display_cols = ['排名', 'DMU', '_DMU_SORT', '效率值']
                     if '规模报酬(RTS)' in results_display.columns:
                         display_cols.append('规模报酬(RTS)')
@@ -2383,7 +2383,7 @@ def main():
                         results_display = format_efficiency_values(results_display, ['综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)'])
                         results_display['排名'] = list(range(1, len(results_display) + 1))
                         
-                        # 添加隐藏的DMU排序列，用于正确的数字排序
+                        # 添加DMU数字排序键，用于正确的数字排序
                         def extract_dmu_number(dmu_name):
                             """从DMU名称中提取数字用于排序"""
                             import re
@@ -2392,7 +2392,7 @@ def main():
                         
                         results_display['_DMU_SORT'] = results_display['DMU'].apply(extract_dmu_number)
                         
-                        # 重新排列列顺序
+                        # 重新排列列顺序，包含排序键但不显示
                         results_display = results_display[['排名', 'DMU', '_DMU_SORT', '综合效率(TE)', '纯技术效率(PTE)', '规模效率(SE)']]
                         
                         # 应用蓝色渐变背景样式
@@ -2445,7 +2445,7 @@ def main():
                         efficiency_col = '效率值'
                         results_display['排名'] = list(range(1, len(results_display) + 1))
                         
-                        # 添加隐藏的DMU排序列，用于正确的数字排序
+                        # 添加DMU数字排序键，用于正确的数字排序
                         def extract_dmu_number(dmu_name):
                             """从DMU名称中提取数字用于排序"""
                             import re
