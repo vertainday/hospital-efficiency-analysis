@@ -2417,27 +2417,6 @@ def main():
                         # 重新排列列顺序
                         results_display = results_display[display_cols]
                     
-                    # 应用蓝色渐变背景样式
-                    st.markdown("""
-                    <style>
-                    .efficiency-table {
-                        background: linear-gradient(135deg, #e3f2fd, #bbdefb, #90caf9);
-                        border-radius: 10px;
-                        padding: 1rem;
-                        margin: 1rem 0;
-                        box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    st.markdown('<div class="efficiency-table">', unsafe_allow_html=True)
-                    st.dataframe(
-                        results_display,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    st.markdown('</div>', unsafe_allow_html=True)
-                                       
                     # 松弛变量分析（非超效率SBM模型）
                     if st.session_state.get('dea_model') != 'Super-SBM':
                         fig, slack_data = create_efficiency_chart(results)
