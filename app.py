@@ -13,11 +13,14 @@ import os
 import pulp
 from typing import Dict, List, Tuple, Optional, Union
 
+# 检查QCA模块是否可用
 try:
     from qca_analysis import perform_necessity_analysis, perform_minimization
     QCA_AVAILABLE = True
+    print("QCA分析模块可用")
 except ImportError:
     QCA_AVAILABLE = False
+    print("QCA分析模块不可用")
 
 class DEAData:
     """DEA数据管理类"""
@@ -771,15 +774,6 @@ st.markdown("""
         border-radius: 15px;
         box-shadow: 0 8px 16px rgba(26, 54, 93, 0.3);
         position: relative;
-    }
-    
-    .main-header::before {
-        content: "🏥";
-        font-size: 3rem;
-        position: absolute;
-        left: 2rem;
-        top: 50%;
-        transform: translateY(-50%);
     }
     
     /* 区域标题样式 */
@@ -1841,22 +1835,43 @@ def download_fsqca_results(fsqca_results, necessity_results):
         st.error(f"结果导出失败: {str(e)}")
         return None
 
+def show_status_card(title, status_text, color):
+    """封装状态卡片"""
+    st.markdown(
+        f"""
+        <div style="display: flex; justify-content: center;">
+            <div class="metric-card" style="text-align: center; max-width: 150px; margin: 0 auto;">
+                <h4 style="margin: 0.5rem 0; color: #1a365d;">{title}</h4>
+                <p style="font-size: 1.3rem; font-weight: bold; margin: 0; color: {color};">
+                    {status_text}
+                </p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 def main():
     # 主标题
-    st.markdown('<div class="main-header">基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统</div>', unsafe_allow_html=True)
-    
-    # 系统状态指示器
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown(
+        '<div class="main-header">基于DEA与fsQCA的医院运营效能与发展路径智慧决策系统</div>',
+        unsafe_allow_html=True
+    )
+    col1, col2, col3 = st.columns(3)
+    data_text = "已上传" if 'data' in st.session_state else "未加载"
+    data_color = "#28a745" if 'data' in st.session_state else "#dc3545"
     with col1:
-        data_status = "✅" if 'data' in st.session_state else "❌"
-        st.markdown(f'<div class="metric-card"><h4>数据状态</h4><p style="font-size: 2rem; margin: 0;">{data_status}</p></div>', unsafe_allow_html=True)
+        show_status_card("数据状态", data_text, data_color)
+    dea_text = "已完成" if 'dea_results' in st.session_state else "未开始"
+    dea_color = "#28a745" if 'dea_results' in st.session_state else "#adb5bd"
     with col2:
-        dea_status = "✅" if 'dea_results' in st.session_state else "❌"
-        st.markdown(f'<div class="metric-card"><h4>DEA分析</h4><p style="font-size: 2rem; margin: 0;">{dea_status}</p></div>', unsafe_allow_html=True)
+        show_status_card("DEA分析", dea_text, dea_color)
+    fsqca_text = "已完成" if 'fsqca_results' in st.session_state else "未开始"
+    fsqca_color = "#28a745" if 'fsqca_results' in st.session_state else "#adb5bd"
     with col3:
-        fsqca_status = "✅" if 'fsqca_results' in st.session_state else "❌"
-        st.markdown(f'<div class="metric-card"><h4>fsQCA分析</h4><p style="font-size: 2rem; margin: 0;">{fsqca_status}</p></div>', unsafe_allow_html=True)
-    
+        show_status_card("fsQCA分析", fsqca_text, fsqca_color)
+
+        
     # ① 数据输入区
     st.markdown('<div class="section-header">① 数据输入区</div>', unsafe_allow_html=True)
     st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
@@ -1865,12 +1880,12 @@ def main():
         # 选择输入模式
         input_mode = st.radio(
             "选择数据输入方式：",
-            ["📁 上传文件模式", "✏️ 手动输入模式"],
+            ["上传文件模式", "手动输入模式"],
             horizontal=True
         )
         
-        if input_mode == "📁 上传文件模式":
-            st.markdown("### 📁 文件上传")
+        if input_mode == "上传文件模式":
+            st.markdown("文件上传")
             # 请上传包含医院数据的Excel或CSV文件，文件必须包含'DMU'列或'医院ID'列。
             
             uploaded_file = st.file_uploader(
@@ -1930,8 +1945,8 @@ def main():
                 except Exception as e:
                     st.markdown(f'<div class="error-message">文件读取错误：{str(e)}</div>', unsafe_allow_html=True)
         
-        elif input_mode == "✏️ 手动输入模式":
-            st.markdown("### ✏️ 手动数据输入")
+        elif input_mode == "手动输入模式":
+            st.markdown("手动数据输入")
             # 请设置医院数量和变量数量，然后逐家输入数据。
             
             # 设置参数
@@ -1946,7 +1961,7 @@ def main():
             
             if df is not None:
                 # 显示预览
-                st.markdown("### 📋 数据预览")
+                st.markdown("数据预览")
                 st.markdown('<div class="data-preview">', unsafe_allow_html=True)
                 st.dataframe(df, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -1968,7 +1983,7 @@ def main():
         data = st.session_state['data']
         
         # 显示数据预览
-        st.subheader("📋 数据预览")
+        st.subheader("数据预览")
         st.dataframe(data.head(), use_container_width=True)
         
         # 获取数值列（排除DMU列和医院ID列）
@@ -1979,9 +1994,9 @@ def main():
             numeric_columns.remove('医院ID')
         
         if len(numeric_columns) < 2:
-            st.error("❌ 数据中至少需要2个数值变量才能进行DEA分析")
+            st.error("数据中至少需要2个数值变量才能进行DEA分析")
         else:
-            st.subheader("⚙️ 变量选择")
+            st.subheader("变量选择")
             
             # 创建两列布局
             col1, col2 = st.columns(2)
@@ -2012,14 +2027,14 @@ def main():
             
             # 验证变量选择
             if not input_vars:
-                st.error("❌ 请至少选择1个投入变量")
+                st.error("请至少选择1个投入变量")
             elif not output_vars:
-                st.error("❌ 请至少选择1个产出变量")
+                st.error("请至少选择1个产出变量")
             else:
                 # 已选择投入变量和产出变量
                 
                 # 模型选择
-                st.subheader("🔬 模型选择")
+                st.subheader("模型选择")
                 
                 model_options = {
                     "CCR模型（规模报酬不变）": {
@@ -2071,7 +2086,7 @@ def main():
                 # 非期望产出选择（仅对SBM模型显示）
                 undesirable_outputs = None
                 if model_info['value'] in ['SBM', 'Super-SBM']:
-                    st.markdown("**⚠️ 非期望产出选择**")
+                    st.markdown("**非期望产出选择**")
                     st.caption("独立选择非期望产出变量（如医疗纠纷、不良事件等）")
                     
                     # 从所有数值变量中独立选择非期望产出
@@ -2106,7 +2121,7 @@ def main():
                 
                 # 为SBM模型添加无解处理选项（超效率SBM模型已移除）
                 if model_info['value'] in ['SBM']:
-                    st.subheader("🔧 无解处理选项")
+                    st.subheader("无解处理选项")
                     
                     handle_infeasible = st.radio(
                         "选择无解处理方式",
@@ -2128,12 +2143,12 @@ def main():
                     handle_infeasible = 'set_to_1'
                 
                 # 数据预处理选项
-                st.subheader("📊 数据预处理选项")
+                st.subheader("数据预处理选项")
                 normalize_data = st.checkbox("标准化数据", value=True, 
                                            help="将数据缩放到[0,1]范围，避免量纲差异影响结果")
                 
                 # 求解器参数调整
-                st.subheader("⚙️ 求解器参数")
+                st.subheader("求解器参数")
                 col1, col2 = st.columns(2)
                 with col1:
                     max_iter = st.number_input("最大迭代次数", min_value=100, value=5000, step=100,
@@ -2146,7 +2161,7 @@ def main():
                 st.markdown("---")
                 col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1.5, 1.5, 1])
                 with col_btn2:
-                    if st.button("🚀 执行DEA分析", type="primary", use_container_width=True):
+                    if st.button("执行DEA分析", type="primary", use_container_width=True):
                         with st.spinner("正在执行DEA分析..."):
                             # 执行DEA分析
                             results = perform_dea_analysis(
@@ -2371,7 +2386,7 @@ def main():
                     if st.session_state.get('dea_model') != 'Super-SBM':
                         fig, slack_data = create_efficiency_chart(results)
                         if slack_data and slack_data.get('columns'):
-                            st.subheader("📊 松弛变量分析")
+                            st.subheader("松弛变量分析")
                             st.markdown("松弛变量表示各DMU在投入和产出方面的冗余或不足情况：")
                             
                             # 显示松弛变量数据表格
@@ -2392,18 +2407,18 @@ def main():
                     st.plotly_chart(fig, use_container_width=True)
                     
                     # 提供结果下载
-                    st.subheader("💾 结果下载")
+                    st.subheader("结果下载")
                     csv_data = download_dea_results(results)
                     
                     st.download_button(
-                        label="📥 下载DEA分析结果 (CSV)",
+                        label="下载DEA分析结果 (CSV)",
                         data=csv_data,
                         file_name=f"DEA分析结果_{st.session_state.get('dea_model', 'Unknown')}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
                     
                     # 分析摘要
-                    st.subheader("📋 分析摘要")
+                    st.subheader("分析摘要")
                     if '综合效率(TE)' in results.columns:
                         # 如果包含三种效率值，显示三种效率的指标
                         col1, col2, col3 = st.columns(3)
@@ -2471,7 +2486,7 @@ def main():
     
     # 检查QCA模块状态
     if not QCA_AVAILABLE:
-        st.error("❌ QCA分析模块不可用，请检查模块安装")
+        st.error("QCA分析模块不可用，请检查模块安装")
         # 解决方案：
         st.markdown("""
         1. 确保qca_analysis.py文件存在
@@ -2486,7 +2501,7 @@ def main():
         dea_results = st.session_state['dea_results']
         
         # 显示数据预览
-        st.subheader("📋 数据预览")
+        st.subheader("数据预览")
         st.dataframe(data.head(), use_container_width=True)
         
         # 获取可用的条件变量（排除DEA已使用的变量）
@@ -2494,9 +2509,9 @@ def main():
         available_vars = [col for col in data.columns if col not in ['DMU', '医院ID'] + used_vars]
         
         if len(available_vars) < 1:
-            st.error("❌ 没有可用的条件变量，请确保数据中包含除DEA变量外的其他变量")
+            st.error("没有可用的条件变量，请确保数据中包含除DEA变量外的其他变量")
         else:
-            st.subheader("⚙️ 条件变量选择")
+            st.subheader("条件变量选择")
             
             # 推荐常用条件变量
             recommended_vars = []
@@ -2517,11 +2532,11 @@ def main():
             
             # 验证条件变量选择
             if not condition_vars:
-                st.error("❌ 请至少选择1个条件变量")
+                st.error("请至少选择1个条件变量")
             else:
                 # 已选择条件变量
                 
-                st.subheader("🔧 数据预处理")
+                st.subheader("数据预处理")
                 # 正在将条件变量标准化为0-1范围的模糊集...
                 
                 # 创建数据副本用于QCA分析
@@ -2539,12 +2554,12 @@ def main():
                         pass
                 
                 # 显示标准化后的数据预览
-                st.markdown("### 📊 标准化后数据预览")
+                st.markdown("标准化后数据预览")
                 st.dataframe(data_with_efficiency[condition_vars + ['效率值']].head(), use_container_width=True)
                 # ===== 标准化步骤结束 =====
                 
                 # 必要性分析配置
-                st.subheader("🔍 必要性分析配置")
+                st.subheader("必要性分析配置")
                 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -2560,8 +2575,8 @@ def main():
                         pass
                 
                 # 组态路径分析参数配置
-                st.subheader("⚙️ 组态路径分析参数配置")
-                st.markdown("**🏥 医疗行业推荐值**")
+                st.subheader("组态路径分析参数配置")
+                st.markdown("**医疗行业推荐值**")
                 
                 col1, col2, col3 = st.columns(3)
                 
@@ -2597,12 +2612,12 @@ def main():
                 
                 # 验证参数
                 if pri_consistency >= consistency:
-                    st.error("❌ PRI一致性阈值必须小于一致性阈值")
+                    st.error("PRI一致性阈值必须小于一致性阈值")
                 else:
                     # 参数配置正确
                     
                     # 执行分析按钮
-                    if st.button("🚀 生成高质量发展路径", type="primary", help="点击生成基于fsQCA的高质量发展路径"):
+                    if st.button("生成高质量发展路径", type="primary", help="点击生成基于fsQCA的高质量发展路径"):
                         with st.spinner("正在执行fsQCA分析..."):
                             # 准备数据（合并DEA结果）
                             dmu_column = 'DMU' if 'DMU' in data.columns else '医院ID'
@@ -2678,11 +2693,11 @@ def main():
                                 
                                 # 显示必要性分析结果
                                 if not necessity_results.empty:
-                                    st.subheader("📊 必要性分析结果")
+                                    st.subheader("必要性分析结果")
                                     st.dataframe(necessity_results, use_container_width=True)
                                 
                                 # 显示组态路径分析结果
-                                st.subheader("🔍 组态路径分析结果")
+                                st.subheader("组态路径分析结果")
                                 
                                 # 过滤有效路径
                                 valid_paths = fsqca_results[fsqca_results['Path Type'] != '无效路径']
@@ -2735,25 +2750,25 @@ def main():
                                         st.metric("核心路径数", core_paths)
                                     
                                     # 创建覆盖度图表
-                                    st.subheader("📈 路径覆盖度比较")
+                                    st.subheader("路径覆盖度比较")
                                     fig = create_coverage_chart(fsqca_results)
                                     if fig:
                                         st.plotly_chart(fig, use_container_width=True)
                                     
                                     # 提供结果下载
-                                    st.subheader("💾 结果下载")
+                                    st.subheader("结果下载")
                                     excel_data = download_fsqca_results(fsqca_results, necessity_results)
                                     
                                     if excel_data:
                                         st.download_button(
-                                            label="📥 下载fsQCA分析结果 (Excel)",
+                                            label="下载fsQCA分析结果 (Excel)",
                                             data=excel_data,
                                             file_name=f"fsQCA分析结果_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                         )
                                     
                                     # 分析摘要
-                                    st.subheader("📋 分析摘要")
+                                    st.subheader(" 分析摘要")
                                     
                                     if len(valid_paths) > 0:
                                         best_path = valid_paths.iloc[0]
@@ -2773,7 +2788,7 @@ def main():
                                     pass
                             else:
                                 # QCA分析失败
-                                st.error("fsQCA分析失败，请检查数据和参数设置")
+                                st.error("❌ fsQCA分析失败，请检查数据和参数设置")
                                 # 可能的原因：
                                 st.markdown("""
                                 1. 数据格式不正确
