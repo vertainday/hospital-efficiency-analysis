@@ -1878,7 +1878,7 @@ def show_status_card(title, status_text, color):
                     line-height: 1.4; 
                     letter-spacing: 0.05em;
                 ">
-                <span style="display: inline-block; transform: translateX(-4px);">
+                <span style="display: inline-block; transform: translateX(-8px);">
                     {status_text}
                 </p>
             </div>
