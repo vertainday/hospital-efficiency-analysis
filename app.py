@@ -1878,7 +1878,7 @@ def show_status_card(title, status_text, color):
                     line-height: 1.4; 
                     letter-spacing: 0.05em;
                 ">
-                <span style="display: inline-block; transform: translateX(-12px);">
+                <span style="display: inline-block; transform: translateX(-13px);">
                     {status_text}
                 </p>
             </div>
@@ -1909,7 +1909,7 @@ def main():
 
         
     # ① 数据输入区
-    st.markdown('<div class="section-header">① 数据输入区</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">数据输入区</div>', unsafe_allow_html=True)
     st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
     
     if 'data' not in st.session_state:
@@ -2012,7 +2012,7 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)  # 关闭数据输入区容器
     
     # ② DEA分析区
-    st.markdown('<div class="section-header">② DEA分析区</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">DEA分析区</div>', unsafe_allow_html=True)
     st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
     
     if 'data' in st.session_state:
@@ -2517,7 +2517,7 @@ def main():
     st.markdown('</div>', unsafe_allow_html=True)  # 关闭DEA分析区容器
     
     # ③ fsQCA路径分析区
-    st.markdown('<div class="section-header">③ fsQCA路径分析区</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">fsQCA路径分析区</div>', unsafe_allow_html=True)
     st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
     
     # 检查QCA模块状态
