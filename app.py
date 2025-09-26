@@ -1861,13 +1861,15 @@ def show_status_card(title, status_text, color):
                     font-weight: 600;
                     color: #1a365d;
                     line-height: 1.3;
+                    padding: 0;
                 ">{title}</h4>
                 <p style="
                     font-size: 1.3rem;
                     font-weight: bold;
-                    margin: 8px 0 0 0;
+                    margin: 4px 0 0 0;
                     color: {color};
-                    line-height: 1.3;
+                    line-height: 1.1;
+                    padding: 0;
                 ">
                     {status_text}
                 </p>
