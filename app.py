@@ -1845,7 +1845,7 @@ def show_status_card(title, status_text, color):
                 justify-content: center;
                 align-items: center;
                 width: 100%;
-                min-width: 200px;      
+                min-width: 350px;      
                 max-width: 400px;      
                 margin: 0 10px;
                 padding: 12px 16px;
@@ -1863,7 +1863,7 @@ def show_status_card(title, status_text, color):
                     line-height: 1.3;
                 ">{title}</h4>
                 <p style="
-                    font-size: 1.25rem;
+                    font-size: 1.6rem;
                     font-weight: bold;
                     margin: 8px 0 0 0;
                     color: {color};
