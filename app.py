@@ -1846,7 +1846,7 @@ def show_status_card(title, status_text, color):
                 align-items: center;
                 width: 100%;
                 min-width: 350px;      
-                max-width: 400px;      
+                max-width: 600px;      
                 margin: 0 10px;
                 padding: 12px 16px;
                 background-color: white;
@@ -1857,17 +1857,17 @@ def show_status_card(title, status_text, color):
             ">
                 <h4 style="
                     margin: 0;
-                    font-size: 1.1em;
+                    font-size: 1.6rem;
                     font-weight: 600;
                     color: #1a365d;
                     line-height: 1.3;
                 ">{title}</h4>
                 <p style="
-                    font-size: 1.6rem;
+                    font-size: 1.3rem;
                     font-weight: bold;
                     margin: 8px 0 0 0;
                     color: {color};
-                    line-height: 1.4;
+                    line-height: 1.3;
                 ">
                     {status_text}
                 </p>
