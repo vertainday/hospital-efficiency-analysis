@@ -1838,38 +1838,45 @@ def download_fsqca_results(fsqca_results, necessity_results):
 def show_status_card(title, status_text, color):
     st.markdown(
         f"""
-        <div style="display: flex; justify-content: center; height: 100%;">
+        <div style="
+            display: flex;
+            justify-content: center;
+            height: 100%;
+        ">
             <div class="metric-card" style="
                 display: flex;
                 flex-direction: column;
-                justify-content: center;
                 align-items: center;
+                justify-content: center;
                 width: 100%;
-                min-width: 350px;      
-                max-width: 600px;      
+                min-width: 350px;
+                max-width: 600px;
                 margin: 0 10px;
-                padding: 12px 16px;
+                padding: 16px 20px;
                 background-color: white;
                 border-radius: 12px;
-                text-align: center;
                 border: 1px solid #e0e0e0;
+                text-align: center;
                 transition: all 0.2s ease;
+                gap: 8px;  
             ">
                 <h4 style="
                     margin: 0;
+                    padding: 0;
                     font-size: 1.6rem;
                     font-weight: 600;
                     color: #1a365d;
-                    line-height: 1.3;
-                    padding: 0;
+                    line-height: 1.4; 
+                    letter-spacing: 0.05em;
                 ">{title}</h4>
                 <p style="
+                    margin: 0;          
+                    padding: 0;
                     font-size: 1.3rem;
                     font-weight: bold;
-                    margin: 4px 0 0 0;
                     color: {color};
-                    line-height: 1.1;
-                    padding: 0;
+                    line-height: 1.4; 
+                    letter-spacing: 0.05em;
                 ">
                     {status_text}
                 </p>
@@ -1878,7 +1885,6 @@ def show_status_card(title, status_text, color):
         """,
         unsafe_allow_html=True
     )
-
 
 def main():
     # 主标题
