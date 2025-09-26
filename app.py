@@ -1845,8 +1845,8 @@ def show_status_card(title, status_text, color):
                 justify-content: center;
                 align-items: center;
                 width: 100%;
-                min-width: 130px;      
-                max-width: 180px;      
+                min-width: 200px;      
+                max-width: 400px;      
                 margin: 0 10px;
                 padding: 12px 16px;
                 background-color: white;
