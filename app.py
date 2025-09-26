@@ -2003,8 +2003,8 @@ def main():
                 st.session_state['data_source'] = 'manual'
                 
                 # 数据输入完成！可以进入DEA效率分析模块。
-
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+        
     
     # ② DEA分析区
     st.markdown('<div class="section-header">DEA分析区</div>', unsafe_allow_html=True)
