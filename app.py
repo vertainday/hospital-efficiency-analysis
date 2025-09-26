@@ -442,7 +442,6 @@ class SBMModel:
         else:
             self.result.add_result(dmu_name, float('inf'), {}, status="Infeasible")
 
-
 class CustomDEA:
     """简化的DEA实现，使用新的DEA模型类"""
     
@@ -740,7 +739,7 @@ st.markdown("""
         visibility: hidden;
     }
     .stApp > footer:after {
-        content: "医院运营效能智慧决策系统 v1.0";
+        content: "医院运营效能智慧决策系统";
         visibility: visible;
         display: block;
         position: relative;
@@ -1073,13 +1072,13 @@ def process_cleaned_data(df_cleaned, warnings):
             st.markdown(f'<div class="warning-message">{warning}</div>', unsafe_allow_html=True)
     
     # 显示数据预览
-    st.markdown("### 📋 数据预览（前5行）")
+    st.markdown("数据预览（前5行）")
     st.markdown('<div class="data-preview">', unsafe_allow_html=True)
     st.dataframe(df_cleaned.head(), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
     # 数据统计信息
-    st.markdown("### 📈 数据统计信息")
+    st.markdown("数据统计信息")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("医院数量", len(df_cleaned))
@@ -1095,7 +1094,7 @@ def process_cleaned_data(df_cleaned, warnings):
     # 数据加载完成
     
     # 自动跳转到下一步
-    st.markdown("### 🚀 下一步操作")
+    st.markdown("下一步操作")
     st.markdown("数据已成功加载，您可以：")
     st.markdown("1. 进行DEA效率分析")
     st.markdown("2. 进行fsQCA路径分析")
@@ -1113,7 +1112,7 @@ def detect_and_handle_nulls(df):
     # 检测到空值
     
     # 显示各列空值详情
-    with st.expander("📊 空值详情", expanded=True):
+    with st.expander("空值详情", expanded=True):
         null_info = []
         for col, count in null_counts.items():
             if count > 0:
@@ -1125,13 +1124,13 @@ def detect_and_handle_nulls(df):
                 st.write(info)
     
     # 让用户选择处理方式
-    st.markdown("### 🔧 请选择空值处理方式")
+    st.markdown("请选择空值处理方式")
     
     col1, col2 = st.columns(2)
     
     with col1:
         fill_zero_btn = st.button(
-            "🔄 将空值转换为0", 
+            "将空值转换为0", 
             key="fill_zero_btn",
             help="保留所有数据行，将空值填充为0",
             type="primary"
@@ -1139,7 +1138,7 @@ def detect_and_handle_nulls(df):
     
     with col2:
         drop_rows_btn = st.button(
-            "🗑️ 删除包含空值的行", 
+            "删除包含空值的行", 
             key="drop_rows_btn",
             help="删除包含任何空值的数据行",
             type="secondary"
@@ -1205,7 +1204,7 @@ def clean_data(df, null_handling='fill_zero'):
 
 def create_manual_input_form(num_hospitals, num_variables):
     """创建手动输入表单"""
-    st.subheader("📝 手动输入数据")
+    st.subheader("手动输入数据")
     
     # 创建变量配置
     variables = []
@@ -1223,7 +1222,7 @@ def create_manual_input_form(num_hospitals, num_variables):
         return None
     
     # 创建数据输入表格
-    st.subheader("🏥 医院数据输入")
+    st.subheader("医院数据输入")
     
     # 创建列名
     columns = ["DMU"] + [var["name"] for var in variables]
@@ -1629,7 +1628,7 @@ def display_dea_formulas():
     st.markdown("**解释**：φ > 1 表示可以按比例增加产出，φ = 1 表示DEA有效")
     
     # 重要说明
-    st.markdown("#### ⚠️ 重要说明")
+    st.markdown("#### 重要说明")
     st.markdown("""
     **注意**：您提到的公式 $\max \theta$ 和 $\sum_{j=1}^{n} \lambda_j x_{ij} \leq \theta x_{i0}$ 
     实际上是**输出导向**CCR模型的公式，不是输入导向的。
@@ -1907,13 +1906,10 @@ def main():
     with col3:
         show_status_card("fsQCA分析", fsqca_text, fsqca_color)
 
-        
-    # ① 数据输入区
     st.markdown('<div class="section-header">数据输入区</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
-    
+        
     if 'data' not in st.session_state:
-        # 选择输入模式
+        st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
         input_mode = st.radio(
             "选择数据输入方式：",
             ["上传文件模式", "手动输入模式"],
@@ -2007,15 +2003,14 @@ def main():
                 st.session_state['data_source'] = 'manual'
                 
                 # 数据输入完成！可以进入DEA效率分析模块。
-    
-    else:
-        st.markdown('</div>', unsafe_allow_html=True)  # 关闭数据输入区容器
+
+        st.markdown('</div>', unsafe_allow_html=True)
     
     # ② DEA分析区
     st.markdown('<div class="section-header">DEA分析区</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
-    
+        
     if 'data' in st.session_state:
+        st.markdown('<div class="analysis-section">', unsafe_allow_html=True)
         data = st.session_state['data']
         
         # 显示数据预览
@@ -2507,14 +2502,8 @@ def main():
                     else:
                         # 如果没有三种效率值，显示单一效率值统计
                         efficiency_stats = results['效率值'].describe()
-                        st.write(efficiency_stats)
-                    
-                    
-    else:
-        # 请先在数据输入区中加载数据
-        pass
-    
-    st.markdown('</div>', unsafe_allow_html=True)  # 关闭DEA分析区容器
+                        st.write(efficiency_stats)              
+    st.markdown('</div>', unsafe_allow_html=True)                
     
     # ③ fsQCA路径分析区
     st.markdown('<div class="section-header">fsQCA路径分析区</div>', unsafe_allow_html=True)
@@ -2808,7 +2797,7 @@ def main():
                                     
                                     if len(valid_paths) > 0:
                                         best_path = valid_paths.iloc[0]
-                                        st.markdown(f"🏆 **最优路径**: {best_path['Solution Path']}")
+                                        st.markdown(f"**最优路径**: {best_path['Solution Path']}")
                                         st.markdown(f"   - 一致性: {best_path['Raw Consistency']:.4f}")
                                         st.markdown(f"   - 覆盖度: {best_path['Raw Coverage']:.4f}")
                                         st.markdown(f"   - 路径类型: {best_path['Path Type']}")
@@ -2824,7 +2813,7 @@ def main():
                                     pass
                             else:
                                 # QCA分析失败
-                                st.error("❌ fsQCA分析失败，请检查数据和参数设置")
+                                st.error("fsQCA分析失败，请检查数据和参数设置")
                                 # 可能的原因：
                                 st.markdown("""
                                 1. 数据格式不正确
