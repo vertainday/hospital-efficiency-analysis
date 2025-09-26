@@ -1836,50 +1836,46 @@ def download_fsqca_results(fsqca_results, necessity_results):
         return None
 
 def show_status_card(title, status_text, color):
+    # 基于标题长度计算最小宽度（单位：em）
+    width_em = max(8, len(title) * 1.3)  # 至少 8em，每个中文约 1.2em
+
     st.markdown(
         f"""
-        <div style="
-            display: flex;
-            justify-content: center;
-            height: 100%;
-        ">
-            <div class="metric-card" style="
+        <div style="display: flex; justify-content: center;">
+            <div style="
                 display: flex;
                 flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                width: 100%;
+                gap: 6px;
                 min-width: 350px;
-                max-width: 600px;
-                margin: 0 10px;
                 padding: 16px 20px;
-                background-color: white;
-                border-radius: 12px;
+                background: white;
                 border: 1px solid #e0e0e0;
+                border-radius: 12px;
                 text-align: center;
-                transition: all 0.2s ease;
-                gap: 8px;  
+                box-shadow: 0 4px 8px rgba(0,0,0,0.08);
             ">
                 <h4 style="
                     margin: 0;
-                    padding: 0;
+                    padding: 0 10px;
                     font-size: 1.6rem;
                     font-weight: 600;
                     color: #1a365d;
-                    line-height: 1.4; 
-                    letter-spacing: 0.05em;
+                    line-height: 1.4;
+                    min-width: {width_em}em;
+                    text-align: center;
+                    font-family: 'Microsoft YaHei', sans-serif;
                 ">{title}</h4>
                 <p style="
-                    margin: 0;          
-                    padding: 0;
+                    margin: 0;
+                    padding: 0 10px;
                     font-size: 1.3rem;
                     font-weight: bold;
                     color: {color};
-                    line-height: 1.4; 
-                    letter-spacing: 0.05em;
-                ">
-                    {status_text}
-                </p>
+                    line-height: 1.4;
+                    min-width: {width_em}em;
+                    text-align: center;
+                    font-family: 'Microsoft YaHei', sans-serif;
+                ">{status_text}</p>
             </div>
         </div>
         """,
