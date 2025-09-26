@@ -1836,13 +1836,39 @@ def download_fsqca_results(fsqca_results, necessity_results):
         return None
 
 def show_status_card(title, status_text, color):
-    """封装状态卡片"""
     st.markdown(
         f"""
-        <div style="display: flex; justify-content: center;">
-            <div class="metric-card" style="text-align: center; max-width: 150px; margin: 0 auto;">
-                <h4 style="margin: 0.5rem 0; color: #1a365d;">{title}</h4>
-                <p style="font-size: 1.3rem; font-weight: bold; margin: 0; color: {color};">
+        <div style="display: flex; justify-content: center; height: 100%;">
+            <div class="metric-card" style="
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                width: 100%;
+                min-width: 130px;      
+                max-width: 180px;      
+                margin: 0 10px;
+                padding: 12px 16px;
+                background-color: white;
+                border-radius: 12px;
+                text-align: center;
+                border: 1px solid #e0e0e0;
+                transition: all 0.2s ease;
+            ">
+                <h4 style="
+                    margin: 0;
+                    font-size: 1.1em;
+                    font-weight: 600;
+                    color: #1a365d;
+                    line-height: 1.3;
+                ">{title}</h4>
+                <p style="
+                    font-size: 1.25rem;
+                    font-weight: bold;
+                    margin: 8px 0 0 0;
+                    color: {color};
+                    line-height: 1.4;
+                ">
                     {status_text}
                 </p>
             </div>
@@ -1850,6 +1876,7 @@ def show_status_card(title, status_text, color):
         """,
         unsafe_allow_html=True
     )
+
 
 def main():
     # 主标题
